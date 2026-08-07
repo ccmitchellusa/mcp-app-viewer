@@ -86,7 +86,12 @@ def describe() -> str:
 
 
 def _browser_argv(name: str, url: str) -> list[str]:
-    return [name, url]
+    # ABSOLUTE path, not the bare name. A split pane starts a fresh shell, and version
+    # managers (nvm, asdf, pyenv) put their shims on PATH only after their init script
+    # runs — carbonyl installs under nvm by default. A bare name would give
+    # "command not found" in a pane the user can see but we cannot read, which reads
+    # as "the app failed to render".
+    return [shutil.which(name) or name, url]
 
 
 # --------------------------------------------------------------- terminal hosts ---
