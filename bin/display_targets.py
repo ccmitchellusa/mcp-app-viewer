@@ -274,6 +274,7 @@ def open_app(
     position: str = "right",
     browser: str | None = None,
     allow_text: bool = False,
+    theme: str | None = None,
 ) -> str:
     """Open ``url`` on ``target``; returns the target actually used."""
     name = (target or "system").strip().lower()
@@ -283,7 +284,9 @@ def open_app(
     if name in {"terminal", "term"}:
         import terminal_browser
 
-        ok, message = terminal_browser.open_in_split(url, position, browser, allow_text)
+        ok, message = terminal_browser.open_in_split(
+            url, position, browser, allow_text, theme
+        )
         if ok:
             return f"terminal: {message}"
         # The message is the whole value here — "no terminal browser installed" and

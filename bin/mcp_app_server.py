@@ -46,8 +46,9 @@ def _show(
     position: str = "right",
     terminal_browser: str | None = None,
     allow_text: bool = False,
+    theme: str | None = None,
 ) -> None:
-    used = _open_on_target(url, target, position, terminal_browser, allow_text)
+    used = _open_on_target(url, target, position, terminal_browser, allow_text, theme)
     print(f"mcp-app-viewer: displayed on {used}")
 
 _MAX_PROXY_BYTES = 32 * 1024 * 1024
@@ -120,6 +121,16 @@ def main(argv: list[str] | None = None) -> int:
         help="which terminal browser the 'terminal' target uses (default: best engine found)",
     )
     ap.add_argument(
+        "--theme",
+        default="auto",
+        choices=["auto", "light", "dark"],
+        help=(
+            "colour scheme the terminal browser reports to prefers-color-scheme. "
+            "auto follows the OS. Only carbonyl needs this -- real browsers already "
+            "follow your system setting."
+        ),
+    )
+    ap.add_argument(
         "--fallback-preview",
         action="store_true",
         help=(
@@ -155,7 +166,12 @@ def main(argv: list[str] | None = None) -> int:
         threading.Timer(
             0.4,
             lambda: _show(
-                url, args.browser, args.position, args.terminal_browser, args.fallback_preview
+                url,
+                args.browser,
+                args.position,
+                args.terminal_browser,
+                args.fallback_preview,
+                args.theme,
             ),
         ).start()
     try:

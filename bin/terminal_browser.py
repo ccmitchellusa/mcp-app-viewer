@@ -85,6 +85,53 @@ def describe() -> str:
     return "\n".join(lines)
 
 
+def detect_system_theme() -> str:
+    """The OS light/dark preference: "dark", "light", or "" if unknown.
+
+    Real browsers read this themselves, so every other target honours your system
+    setting for free. Carbonyl does not: it is headless Chromium, which defaults to
+    LIGHT no matter what the desktop says. Measured on a Dark system, carbonyl
+    reported ``prefers-color-scheme: dark`` as FALSE.
+
+    That mattered more than cosmetics here — the Longleaf palette is
+    prefers-color-scheme driven, so a wrong answer renders the whole app in the wrong
+    theme inside a dark terminal.
+    """
+    if sys.platform == "darwin":
+        done = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"], capture_output=True, text=True
+        )
+        # The key is ABSENT in light mode rather than set to "Light", so a non-zero
+        # exit is the documented way light is reported — not an error to log.
+        return "dark" if done.returncode == 0 and "dark" in done.stdout.lower() else "light"
+    done = subprocess.run(
+        ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode == 0:
+        return "dark" if "dark" in done.stdout.lower() else "light"
+    return ""
+
+
+# Chromium's own switch. Verified empirically rather than assumed:
+#   preferredColorScheme=0 -> prefers-color-scheme: dark  matches
+#   preferredColorScheme=1 -> light
+#   --force-dark-mode      -> light (it is Chrome's auto-darkening of light pages,
+#                             a different feature that does NOT set the media query)
+_COLOR_SCHEME_FLAG = {"dark": "0", "light": "1"}
+
+
+def _theme_argv(browser: str, theme: str) -> list[str]:
+    """Flags that make ``browser`` report ``theme`` to prefers-color-scheme."""
+    if browser != "carbonyl":
+        # browsh drives a real Firefox, which follows the desktop already; text
+        # browsers have no concept of it. Only carbonyl needs telling.
+        return []
+    value = _COLOR_SCHEME_FLAG.get(theme)
+    return [f"--blink-settings=preferredColorScheme={value}"] if value else []
+
+
 def _browser_argv(name: str, url: str) -> list[str]:
     # ABSOLUTE path, not the bare name. A split pane starts a fresh shell, and version
     # managers (nvm, asdf, pyenv) put their shims on PATH only after their init script
@@ -293,6 +340,7 @@ def open_in_split(
     position: str = "right",
     browser: str | None = None,
     allow_text: bool = False,
+    theme: str | None = None,
 ) -> tuple[bool, str]:
     """Split the current terminal and render ``url`` in a terminal browser.
 
@@ -331,7 +379,11 @@ def open_in_split(
             "kitty, iTerm2). Run inside one, or use a browser target."
         )
 
-    argv = " ".join(shlex.quote(part) for part in _browser_argv(name, url))
+    want = (theme or "auto").strip().lower()
+    resolved_theme = detect_system_theme() if want == "auto" else want
+    parts = _browser_argv(name, url)
+    parts[1:1] = _theme_argv(name, resolved_theme)
+    argv = " ".join(shlex.quote(part) for part in parts)
     bindir = _runtime_path_prefix(name)
     if bindir:
         argv = f"PATH={shlex.quote(bindir)}:$PATH {argv}"
@@ -345,7 +397,8 @@ def open_in_split(
         caveat = " (partial JS — confirm anything surprising in a real browser)"
     elif engine == "text":
         caveat = " (text-only: this is the FALLBACK, not the app)"
-    return True, f"{name} in a {host} pane ({position}){caveat}"
+    theme_note = f", {resolved_theme} theme" if resolved_theme else ""
+    return True, f"{name} in a {host} pane ({position}{theme_note}){caveat}"
 
 
 if __name__ == "__main__":

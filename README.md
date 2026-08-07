@@ -196,10 +196,30 @@ enables them deliberately — for previewing the fallback, never for judging the
 
 ```
 /mcp-app target terminal
+/mcp-app theme              # auto (OS) | light | dark
 /mcp-app browser            # list detected, with engine class
 /mcp-app browser carbonyl   # pin one
 /mcp-app browser auto       # best engine available (default)
 ```
+
+**Light/dark follows your OS.** Real browsers read `prefers-color-scheme` themselves, so
+every other target honours your system setting for free. Carbonyl does not — it is
+headless Chromium, which reports **light** no matter what the desktop says (measured:
+on a Dark system, `prefers-color-scheme: dark` evaluated false). Since the Longleaf
+palette is driven by that media query, the whole app rendered in the wrong theme inside
+a dark terminal.
+
+So the OS preference is detected and passed through. The flag was found by testing, not
+assumption:
+
+| flag | `prefers-color-scheme: dark` |
+|---|---|
+| *(none)* | false — even on a Dark system |
+| `--blink-settings=preferredColorScheme=0` | **true** |
+| `--blink-settings=preferredColorScheme=1` | false |
+| `--force-dark-mode` | false — Chrome's auto-darkening, a different feature |
+
+Override with `/mcp-app theme light|dark` to check the other one deliberately.
 
 **How the pixels happen:** these do not use sixel or the kitty graphics protocol. They
 use 24-bit truecolor ANSI plus the Unicode half-block `▀` (U+2580) — foreground colour

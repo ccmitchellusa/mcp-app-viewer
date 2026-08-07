@@ -14,6 +14,7 @@
 #   mcp-app.sh base <url|->     set/clear the origin used to resolve relative assets
 #   mcp-app.sh target <name>    where to display: system|chrome|safari|firefox|iterm2|vscode|terminal|none
 #   mcp-app.sh browser [name]   which TERMINAL browser the 'terminal' target uses
+#   mcp-app.sh theme [auto|light|dark]  colour scheme reported to the app (auto = OS)
 #   mcp-app.sh assets <dir|->   local dir serving the app's relative assets
 #   mcp-app.sh position <where> pane placement for split targets: right|left|top|bottom
 #   mcp-app.sh log              tail the activity log
@@ -102,10 +103,12 @@ open_app() { # <file|->
   local assets; assets=$(_get assets "$MCP_APP_ASSETS")
   local pos; pos=$(_get position "$MCP_APP_POSITION")
   local tb;  tb=$(_get browser "")
+  local th;  th=$(_get theme "auto")
   local args=(--html-file "$LAST_HTML" --port "$MCP_APP_PORT" --browser "$target" --position "$pos")
   [ -n "$base" ]   && args+=(--base-url "$base")
   [ -n "$assets" ] && args+=(--assets-dir "$assets")
   [ -n "$tb" ]     && args+=(--terminal-browser "$tb")
+  [ -n "$th" ]     && args+=(--theme "$th")
 
   nohup "$PY" "$PROJECT_DIR/bin/mcp_app_server.py" "${args[@]}" >> "$LOG" 2>&1 &
   echo $! > "$PIDFILE"
@@ -186,6 +189,23 @@ case "${1:-status}" in
       *)  echo "unknown position '${1}'. Use: right|left|top|bottom" >&2; exit 2 ;;
     esac
     ;;
+  theme)
+    shift
+    case "${1:-}" in
+      auto|light|dark)
+        _set theme "$1"
+        if [ "$1" = "auto" ]; then
+          echo "theme: auto (follows your OS setting)"
+        else
+          echo "theme: $1 (forced)"
+        fi
+        echo "  note: only the terminal browser needs this. Real browsers already"
+        echo "        follow your system preference via prefers-color-scheme."
+        ;;
+      "") echo "theme: $(_get theme "auto")" ;;
+      *)  echo "unknown theme '${1}'. Use: auto|light|dark" >&2; exit 2 ;;
+    esac
+    ;;
   browser)
     shift
     if [ -z "${1:-}" ]; then
@@ -224,6 +244,7 @@ case "${1:-status}" in
     echo "  asset base: $(_get base "${MCP_APP_BASE_URL:-}")"
     echo "  asset dir : $(_get assets "${MCP_APP_ASSETS:-}")"
     echo "  term brwsr: $(_get browser "auto")"
+    echo "  theme     : $(_get theme "auto")"
     echo "  last app  : $([ -s "$LAST_HTML" ] && echo "$(wc -c < "$LAST_HTML" | tr -d ' ') bytes captured" || echo "none")"
     echo "  log       : $LOG"
     ;;
