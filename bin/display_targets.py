@@ -74,17 +74,47 @@ def _open_named(url: str, name: str) -> bool:
         return False
 
 
-def _iterm2_has_browser_profile() -> bool:
-    """Is there a profile we can actually render a web view in?"""
-    done = subprocess.run(
-        ["osascript", "-e", 'tell application "iTerm2" to get name of every profile'],
+def _iterm2_browser_readiness() -> tuple[bool, str]:
+    """Can iTerm2 render a web view in a pane? Returns (ready, why-not).
+
+    Read from PREFERENCES, not AppleScript. The original probe ran
+    `get name of every profile`, which is not valid AppleScript at all: iTerm2's
+    dictionary has no `profile` class, only application/session/tab/window. It
+    therefore failed with -2741 on every machine and the code turned that into
+    "iTerm2 has no browser profile" — a malformed query reported as a finding about
+    the user's setup. The conclusion happened to be right here, for the wrong
+    reason, which is the worst way to be right.
+
+    Two prerequisites, and naming which one is missing is the point: enabling the
+    advanced setting and creating the profile are different five-minute tasks, and
+    being told to do the one you already did is worse than being told nothing.
+    """
+    export = subprocess.run(
+        ["defaults", "export", "com.googlecode.iterm2", "-"],
         capture_output=True,
-        text=True,
     )
-    if done.returncode != 0:
-        return False
-    names = {n.strip().lower() for n in done.stdout.split(",")}
-    return bool(names & {"browser", "web", "webview"})
+    if export.returncode != 0:
+        return False, "could not read iTerm2 preferences"
+    try:
+        import plistlib
+
+        prefs = plistlib.loads(export.stdout)
+    except Exception:  # noqa: BLE001
+        return False, "could not parse iTerm2 preferences"
+
+    if not prefs.get("browserProfiles"):
+        return False, (
+            "iTerm2's browser panes are off. Settings > Advanced > search "
+            "'browserProfiles' > on, then restart iTerm2."
+        )
+    names = {(b.get("Name") or "").strip().lower() for b in prefs.get("New Bookmarks", [])}
+    if not (names & {"browser", "web", "webview"}):
+        return False, (
+            "iTerm2 has browser panes enabled but no profile to render in. Settings > "
+            "Profiles > + > name it 'Browser', then restart iTerm2. "
+            f"(profiles found: {', '.join(sorted(n for n in names if n)) or 'none'})"
+        )
+    return True, ""
 
 
 def _open_iterm2(url: str, position: str = "right") -> bool:
@@ -110,12 +140,9 @@ def _open_iterm2(url: str, position: str = "right") -> bool:
     if "ITERM_SESSION_ID" not in os.environ:
         _warn("not running inside iTerm2 (no ITERM_SESSION_ID)")
         return False
-    if not _iterm2_has_browser_profile():
-        _warn(
-            "iTerm2 has no browser profile, so a pane cannot render the app. "
-            "Enable it once: Settings > Advanced > search 'browserProfiles' > on, "
-            "add a profile named 'Browser', restart iTerm2. Using a browser instead."
-        )
+    ready, why_not = _iterm2_browser_readiness()
+    if not ready:
+        _warn(f"{why_not} Using a browser instead.")
         return False
 
     pos = (position or "right").strip().lower()

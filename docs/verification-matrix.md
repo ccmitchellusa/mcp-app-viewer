@@ -262,3 +262,26 @@ window instead:
   to read a pane as text. Screenshot anyway to confirm the browser actually drew.
 - Screenshots carry a display colour profile (253 reads as ~232). Compare
   **distinctness**, never absolute RGB.
+
+
+## Correction, 2026-08-07: the `iterm2` probe was invalid, not merely failing
+
+This file recorded the `iterm2` target as unable to work here, on the strength of a
+profile query returning nothing. The query was **not valid AppleScript**: iTerm2's
+dictionary has no `profile` class (only application/session/tab/window), so
+`get name of every profile` fails with `-2741` on *every* machine. The code turned
+that error into "iTerm2 has no browser profile" — a malformed query reported as a
+finding about the user's setup.
+
+The conclusion was right here for the wrong reason, which is the worst way to be
+right: it would have said the same thing on a correctly configured machine.
+
+Replaced with a preferences read (`defaults export com.googlecode.iterm2`), which
+checks **both** prerequisites separately and names the one that is missing:
+
+| prerequisite | this host |
+|---|---|
+| `browserProfiles` advanced setting | **enabled** |
+| a profile named `Browser` / `Web` / `WebView` | **absent** — only `Default` |
+
+So the target still cannot render here, and now says so accurately.
