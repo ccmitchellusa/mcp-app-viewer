@@ -147,6 +147,8 @@ is the current one is exactly the failure this project exists to prevent. A real
 needs a version token the served shell polls, plus a per-profile "pane is open" marker
 — and even then the process cannot see whether you closed the pane, only infer it.
 
+Designed but not built: [`docs/pane-reuse-design.md`](docs/pane-reuse-design.md).
+
 ## What the hook will and will not do
 
 It fires on **every** tool call, so it is deliberately cheap and deliberately timid:
