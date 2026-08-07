@@ -184,8 +184,20 @@ components — custom elements whose content JavaScript builds into shadow DOM:
 |---|---|---|
 | `carbonyl` | Chromium | real rendering; closest to the truth |
 | `browsh` | headless Firefox | real rendering; needs Firefox |
-| `cha` (Chawan) | partial JS | better than text, not authoritative |
+| `cha` (Chawan) | **stub** | renders **nothing** — see below |
 | `lynx`, `w3m`, `links`, `elinks` | **none** | an **empty page** — for a working app |
+
+Chawan deserves its own line, because it is the trap. It ships QuickJS and reports
+`customElements = YES`, `attachShadow = YES` — feature detection passes and
+`customElements.define()` throws nothing. But **`connectedCallback` never fires**, so the
+upgrade lifecycle is absent. Every component here builds its UI in that callback, and a
+real MCP App rendered through Chawan 0.4.4 produced **zero bytes**.
+
+That is worse than lynx diagnostically: lynx obviously cannot run JS, while this looks
+capable and silently shows an empty page. It is refused with no opt-in, because unlike a
+text browser there is nothing to see even in principle. (This table previously called it
+"partial" on the strength of having a JS engine — a guess presented as a fact, corrected
+by measuring.)
 
 A text browser showing nothing for a healthy app is a **false negative**, and acting on
 it means debugging a bug that does not exist. That is the confusion this project

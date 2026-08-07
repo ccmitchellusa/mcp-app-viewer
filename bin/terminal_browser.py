@@ -39,9 +39,9 @@ import shutil
 import subprocess
 import sys
 
-# engine: "real"    — a genuine browser engine; what you see is what the app does
-#         "partial" — some JS support; better than nothing, not authoritative
-#         "text"    — no JS at all; shows the text fallback, NOT the app
+# engine: "real" — a genuine browser engine; what you see is what the app does
+#         "stub" — the APIs EXIST but do nothing; feature detection lies (see cha)
+#         "text" — no JS at all; shows the text fallback, NOT the app
 BROWSERS: dict[str, dict[str, str]] = {
     "carbonyl": {
         "engine": "real",
@@ -51,9 +51,19 @@ BROWSERS: dict[str, dict[str, str]] = {
         "engine": "real",
         "note": "drives a headless Firefox; needs Firefox installed",
     },
+    # MEASURED, not assumed (Chawan 0.4.4, 2026-08-07). It has QuickJS and reports
+    # customElements=YES, attachShadow=YES — so feature detection PASSES and
+    # customElements.define() does not throw. But connectedCallback NEVER FIRES, so
+    # the upgrade lifecycle is absent. Every one of our components builds its UI in
+    # connectedCallback, and a real MCP App rendered through it produced ZERO BYTES.
+    #
+    # Worse than lynx, diagnostically: lynx obviously cannot run JS, whereas this
+    # looks capable, throws nothing, and silently renders an empty page. An earlier
+    # version of this table called it "partial" on the strength of having a JS
+    # engine, which was a guess presented as a fact.
     "cha": {
-        "engine": "partial",
-        "note": "Chawan; has a JS engine but incomplete coverage",
+        "engine": "stub",
+        "note": "APIs exist but connectedCallback never fires — renders NOTHING (measured)",
     },
     "w3m": {"engine": "text", "note": "no JavaScript — shows the text fallback only"},
     "lynx": {"engine": "text", "note": "no JavaScript — shows the text fallback only"},
@@ -80,7 +90,7 @@ def describe() -> str:
     lines = []
     for name in found:
         info = BROWSERS[name]
-        mark = {"real": "  ", "partial": "~ ", "text": "! "}[info["engine"]]
+        mark = {"real": "  ", "stub": "! ", "text": "! "}[info["engine"]]
         lines.append(f"  {mark}{name:9} {info['engine']:8} {info['note']}")
     return "\n".join(lines)
 
@@ -363,6 +373,15 @@ def open_in_split(
         name = available[0]
 
     engine = BROWSERS[name]["engine"]
+    if engine == "stub":
+        # No allow_text escape hatch: a text browser at least shows the text
+        # fallback, which is a real (if different) thing to look at. This shows
+        # nothing at all, so there is no use to opt into.
+        return False, (
+            f"{name} advertises customElements and attachShadow but never fires "
+            "connectedCallback, so it renders NOTHING for these apps (measured: zero "
+            "bytes on a real MCP App). Use carbonyl or browsh."
+        )
     if engine == "text" and not allow_text:
         return False, (
             f"{name} has no JavaScript engine. MCP Apps render through web components, "
@@ -393,9 +412,7 @@ def open_in_split(
         return False, f"{host} split failed: {err[:160]}"
 
     caveat = ""
-    if engine == "partial":
-        caveat = " (partial JS — confirm anything surprising in a real browser)"
-    elif engine == "text":
+    if engine == "text":
         caveat = " (text-only: this is the FALLBACK, not the app)"
     theme_note = f", {resolved_theme} theme" if resolved_theme else ""
     article = "an" if host[0] in "aeiou" else "a"
