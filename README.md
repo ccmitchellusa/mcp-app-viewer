@@ -80,6 +80,13 @@ worse than one that shows nothing.
 
 ## Display targets
 
+**Which of these has anyone actually watched work?** Not a rhetorical question — this
+project has caught its own tooling reporting success while opening nothing, and a
+browser that passes feature detection and renders zero bytes. Every path's status,
+the measurement behind it, and the assumptions still outstanding are tracked in one
+place: [`docs/verification-matrix.md`](docs/verification-matrix.md). Read it before
+trusting a target you have not personally seen render.
+
 | target | what it does |
 |---|---|
 | `system` | OS default browser. Always works; every other target falls back to it. |
@@ -334,6 +341,21 @@ It fires on **every** tool call, so it is deliberately cheap and deliberately ti
   — never "this looks like HTML", which would fire on any tool returning a web page
 - scans only the tail of the transcript, so cost does not grow with session length
 - always exits 0, so a viewer problem cannot wedge your session
+
+## Verification status
+
+Which targets, terminal hosts and browsers are measured, which are merely implemented,
+and which claims in the code are still assumptions:
+[`docs/verification-matrix.md`](docs/verification-matrix.md). It also records the method
+— the agent shell has no controlling tty, so the only honest test drives a real window
+and reads it back.
+
+Deep-dive notes for the paths that needed one:
+
+- [`docs/terminal-app-verification.md`](docs/terminal-app-verification.md) — the
+  plain-terminal (inline) route, truecolor, and the three defects it uncovered
+- [`docs/pane-reuse-design.md`](docs/pane-reuse-design.md) — the designed-not-built fix
+  for one-surface-per-render
 
 ## Credits
 
