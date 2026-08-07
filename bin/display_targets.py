@@ -275,10 +275,33 @@ def open_app(
     browser: str | None = None,
     allow_text: bool = False,
     theme: str | None = None,
+    fallback: bool = True,
 ) -> str:
-    """Open ``url`` on ``target``; returns the target actually used."""
+    """Open ``url`` on ``target``; returns the target actually used.
+
+    ``fallback=False`` means the CALLER has already arranged to display the app
+    itself, so degrading to the OS browser here would not be a fallback — it would
+    be a second, unasked-for copy. See the comment on ``_degrade``.
+    """
     name = (target or "system").strip().lower()
     if name in {"none", "off", ""}:
+        return "none"
+
+    def _degrade() -> str:
+        """The last resort: show it *somewhere* rather than nowhere.
+
+        Unless the caller opted out. mcp-app.sh renders the ``terminal`` target
+        inline in the user's own terminal when nothing can split, and this process
+        cannot see that: it is detached, owns no tty, and only knows its split
+        failed. So it fell back to the system browser while the shell went on to
+        run carbonyl — measured directly, a Safari tab on 127.0.0.1:8777 with the
+        same app drawing in the terminal beside it. The caller knows its own
+        intent; ``--no-fallback`` is how it says so.
+        """
+        if not fallback:
+            return "none (fallback declined)"
+        if _open_system(url):
+            return "system (fallback)"
         return "none"
 
     if name in {"terminal", "term"}:
@@ -292,22 +315,16 @@ def open_app(
         # The message is the whole value here — "no terminal browser installed" and
         # "lynx cannot render this" need completely different actions from the user.
         _warn(message)
-        if _open_system(url):
-            return "system (fallback)"
-        return "none"
+        return _degrade()
 
     if name in {"iterm2", "iterm"}:
         if _open_iterm2(url, position):
             return "iterm2"
-        if _open_system(url):
-            return "system (fallback)"
-        return "none"
+        return _degrade()
     if name in {"vscode", "code"}:
         if _open_vscode(url, position):
             return "vscode"
-        if _open_system(url):
-            return "system (fallback)"
-        return "none"
+        return _degrade()
 
     if name == "system":
         _open_system(url)
@@ -315,8 +332,7 @@ def open_app(
 
     if _open_named(url, name):
         return name
-    _open_system(url)
-    return "system (fallback)"
+    return _degrade()
 
 
 if __name__ == "__main__":

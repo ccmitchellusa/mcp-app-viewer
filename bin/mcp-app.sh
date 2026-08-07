@@ -81,22 +81,36 @@ MCP_APP_PORT=$(_get port "$MCP_APP_PORT")
 # to the log) and owns no terminal. Foreground means blocking until you quit the
 # browser, which is right for a command you typed and WRONG for the auto-open hook,
 # so this never runs from the hook -- MCP_APP_NO_INLINE=1 is set there.
-_maybe_inline() {
+#
+# Decided BEFORE the server starts, and that ordering is the fix for a real bug:
+# the viewer, unable to split and unable to see our intent, opened the SYSTEM
+# browser, and then we inlined too -- a Safari tab and a carbonyl render of the
+# same app at the same time. Knowing the answer up front lets us pass
+# --no-fallback, so exactly one of the two draws the app.
+INLINE_CMD=""
+INLINE_NOTE=""
+_plan_inline() {
+  INLINE_CMD=""; INLINE_NOTE=""
   [ "$(_get target "$MCP_APP_TARGET")" = "terminal" ] || return 0
   [ -z "${MCP_APP_NO_INLINE:-}" ] || return 0
   [ -t 1 ] || return 0                       # not a terminal we can draw in
   [ -z "$("$PY" "$PROJECT_DIR/bin/terminal_browser.py" --host 2>/dev/null)" ] || return 0
 
-  local cmd
-  cmd=$("$PY" "$PROJECT_DIR/bin/terminal_browser.py" --inline-command "http://127.0.0.1:$MCP_APP_PORT/app/index.html" 2>/dev/null)
-  if [ -z "$cmd" ]; then
-    echo "no terminal browser installed, and this terminal cannot split." >&2
-    echo "  install one:  brew install carbonyl    (or npm i -g carbonyl)" >&2
-    echo "  or run tmux, which makes the split path work on any terminal." >&2
-    return 0
+  INLINE_CMD=$("$PY" "$PROJECT_DIR/bin/terminal_browser.py" --inline-command "http://127.0.0.1:$MCP_APP_PORT/app/index.html" 2>/dev/null)
+  # No engine installed: there is nothing to inline, so the viewer's own fallback
+  # to a windowing browser is the right outcome and we leave it enabled. Still say
+  # why the target the user chose did not happen.
+  [ -n "$INLINE_CMD" ] && return 0
+  INLINE_NOTE=$'no terminal browser installed, and this terminal cannot split.\n  install one:  brew install carbonyl    (or npm i -g carbonyl)\n  or run tmux, which makes the split path work on any terminal.'
+}
+
+_run_inline() {
+  if [ -n "$INLINE_CMD" ]; then
+    echo "no split available here — opening in THIS terminal (quit the browser to return)"
+    eval "$INLINE_CMD"
+  elif [ -n "$INLINE_NOTE" ]; then
+    printf '%s\n' "$INLINE_NOTE" >&2
   fi
-  echo "no split available here — opening in THIS terminal (quit the browser to return)"
-  eval "$cmd"
 }
 
 _server_running() {
@@ -142,6 +156,18 @@ open_app() { # <file|->
   [ -n "$tb" ]     && args+=(--terminal-browser "$tb")
   [ -n "$th" ]     && args+=(--theme "$th")
 
+  _plan_inline
+  [ -n "$INLINE_CMD" ] && args+=(--no-fallback)
+
+  # Where the log ENDS right now, before this run writes a byte. The verdict scan
+  # below reads only past this mark. Scanning the whole file matched a line from a
+  # previous run and reported it as this one's: from Terminal.app it printed
+  # "carbonyl in an iterm2 pane" -- 34 minutes stale -- while the server was at
+  # that moment logging "displayed on system (fallback)". An append-only log has
+  # no "latest" without an offset.
+  local log_mark=0
+  [ -f "$LOG" ] && log_mark=$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')
+
   # -u is load-bearing, not a nicety. Python BLOCK-buffers stdout when it is not a
   # TTY, and this server runs until killed -- so every print() sat in a buffer that
   # never flushed, and the log showed only the shell's own lines. That hid the one
@@ -164,17 +190,22 @@ open_app() { # <file|->
     # -- and that is precisely the case where you most want to be told whether it
     # worked, so waiting is the right trade.
     for _ in $(seq 1 20); do
-      shown=$(grep -a "mcp-app-viewer: displayed on" "$LOG" 2>/dev/null | tail -1)
+      shown=$(tail -c "+$((log_mark + 1))" "$LOG" 2>/dev/null | grep -a "mcp-app-viewer: displayed on" | tail -1)
       [ -n "$shown" ] && break
       sleep 0.25
     done
     if [ -n "$shown" ]; then
       echo "${shown#mcp-app-viewer: }"
-      _maybe_inline
     else
       echo "displayed on: (no confirmation yet — see '/mcp-app log')"
     fi
     log "opened app ($(printf '%s' "$html" | wc -c | tr -d ' ') bytes)"
+    # OUTSIDE the confirmation branch, deliberately. It used to be inside, which
+    # a stale match hid: on a cold log there is nothing to match, the wait times
+    # out, and the browser that was the whole point of this target never launched.
+    # Whether the verdict line arrived is a reporting question; whether we inline
+    # was already decided, before the server even started.
+    _run_inline
   else
     echo "viewer failed to start — see $LOG" >&2
     return 1
@@ -244,8 +275,14 @@ PYEOF
           echo "  note: chrome-devtools tooling can then inspect the rendered app"
         fi
         if [ "$1" = "terminal" ]; then
-          echo "  note: renders in a terminal browser inside a split pane — works in Ghostty,"
-          echo "        tmux, WezTerm, kitty and iTerm2, and over SSH on a headless box."
+          # Both routes, not just the split one. Advertising only the splitter and
+          # then printing "terminal host: none detected" reads as a failure in the
+          # plain terminal — which is the one place the inline route is the point,
+          # not a consolation.
+          echo "  note: renders in a terminal browser, so it works over SSH on a headless box."
+          echo "        In Ghostty, tmux, WezTerm, kitty or iTerm2 the app opens in a split pane."
+          echo "        In a plain terminal (Terminal.app, xterm, bare SSH) there is nothing to"
+          echo "        split, so it takes over THIS terminal until you quit the browser."
           "$PY" "$PROJECT_DIR/bin/terminal_browser.py" --detect 2>/dev/null
         fi
         ;;

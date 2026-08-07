@@ -186,6 +186,45 @@ def _keep_open(command: str) -> str:
     )
 
 
+# What carbonyl switches ON and never switches back off: SGR mouse reporting
+# (1006) over normal/button/any-motion tracking (1000/1002/1003), plus the
+# alternate screen (1049). Left set, every mouse MOVE writes `^[[<35;24;39M`
+# into the prompt of the shell you were working in.
+#
+# Only the inline path needs this. A split pane is disposable -- _keep_open ends
+# it and the terminal is gone with it -- but inline hands you back the very shell
+# you typed the command in, so leaving it in mouse-reporting mode means the
+# command broke your session as its parting act.
+# Octal escapes, not real ESC bytes: this string is embedded in a shell command
+# that gets logged, eval'd and read by humans, and `printf` expands \033 itself.
+_MODE_RESET = r"\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1049l"
+
+
+def _restore_modes(command: str) -> str:
+    """Wrap ``command`` so the terminal is usable again after it exits.
+
+    TRAPPED, not just appended, and that is the whole difficulty. Ctrl-C is how you
+    quit carbonyl, and Ctrl-C sends SIGINT to the entire foreground process GROUP —
+    this wrapper included. A plain ``browser; printf reset`` therefore never reaches
+    the printf on the one exit path people actually use. Measured: appended-only, the
+    shell came back with SGR tracking still on and `35;79;28M35;77;25M...` pouring
+    into the prompt on every mouse move. Trapping turns death-by-signal into an
+    ordinary exit that runs the reset first.
+
+    The exit status is preserved on every path — 130 for SIGINT, the browser's own
+    status otherwise. The caller reports it, and a cleanup that swallowed it would
+    trade one silent wrongness for another.
+    """
+    return "/bin/sh -c " + shlex.quote(
+        f"__mcp_app_reset() {{ printf '{_MODE_RESET}'; }}; "
+        "trap '__mcp_app_reset; exit 130' INT; "
+        "trap '__mcp_app_reset; exit 143' TERM; "
+        "trap '__mcp_app_reset; exit 129' HUP; "
+        f"{command}; __mcp_app_status=$?; "
+        '__mcp_app_reset; exit "$__mcp_app_status"'
+    )
+
+
 # --------------------------------------------------------------- terminal hosts ---
 def detect_host() -> str:
     """Which terminal are we inside? Checked most-specific first.
@@ -430,6 +469,9 @@ def inline_command(url: str, browser: str | None = None, theme: str | None = Non
     Foreground rendering has to be issued by mcp-app.sh rather than here, because
     the viewer process is detached (nohup, stdout to the log) and owns no terminal.
     So this returns the command and lets the caller exec it.
+
+    The command is wrapped (see ``_restore_modes``) because it is handed back to a
+    terminal the user keeps using, unlike the split path's disposable pane.
     """
     available = detect()
     if not available:
@@ -448,7 +490,9 @@ def inline_command(url: str, browser: str | None = None, theme: str | None = Non
     parts[1:1] = _theme_argv(name, resolved)
     bindir = _runtime_path_prefix(name)
     argv = " ".join(shlex.quote(x) for x in parts)
-    return True, (f"PATH={shlex.quote(bindir)}:$PATH {argv}" if bindir else argv)
+    if bindir:
+        argv = f"PATH={shlex.quote(bindir)}:$PATH {argv}"
+    return True, _restore_modes(argv)
 
 
 if __name__ == "__main__":
@@ -462,6 +506,18 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if "--detect" in sys.argv:
         print(describe())
-        print(f"\nterminal host: {detect_host() or 'none detected'}")
+        host = detect_host()
+        # "terminal host: none detected" on its own reads as a failure, and it is
+        # not one: no splitter is precisely the case the inline path was written
+        # for, and the plain terminal is where it is the INTENDED route. Say which
+        # of the two routes you are going to get.
+        if host:
+            print(f"\nterminal host: {host} — the app opens in a split pane")
+        else:
+            print(
+                "\nterminal host: none detected — no splitter here, so the app "
+                "opens in THIS terminal\n"
+                "               (foreground; quit the browser to get your shell back)"
+            )
     else:
         print(__doc__)

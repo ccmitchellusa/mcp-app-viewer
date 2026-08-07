@@ -47,8 +47,11 @@ def _show(
     terminal_browser: str | None = None,
     allow_text: bool = False,
     theme: str | None = None,
+    fallback: bool = True,
 ) -> None:
-    used = _open_on_target(url, target, position, terminal_browser, allow_text, theme)
+    used = _open_on_target(
+        url, target, position, terminal_browser, allow_text, theme, fallback
+    )
     print(f"mcp-app-viewer: displayed on {used}")
 
 _MAX_PROXY_BYTES = 32 * 1024 * 1024
@@ -138,6 +141,16 @@ def main(argv: list[str] | None = None) -> int:
             "Apps -- use this only to preview the text fallback a non-visual client gets."
         ),
     )
+    ap.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help=(
+            "do NOT open the OS browser when the chosen target is unavailable. For "
+            "callers that will display the app themselves -- mcp-app.sh renders the "
+            "'terminal' target inline when nothing can split, and without this both "
+            "browsers open at once."
+        ),
+    )
     ap.add_argument("--assets-dir", default=None, help="optional local dir mounted at /")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -172,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.terminal_browser,
                 args.fallback_preview,
                 args.theme,
+                not args.no_fallback,
             ),
         ).start()
     try:

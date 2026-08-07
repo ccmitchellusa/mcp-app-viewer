@@ -30,6 +30,13 @@ it is absent from every shell rc (`~/.zshrc`, `~/.zprofile`, `~/.zshenv`, `/etc/
 
 So carbonyl in Terminal.app looks the way it looks in Ghostty. Nothing to degrade.
 
+## The three defects are FIXED and re-verified (2026-08-07)
+
+All three were reproduced, fixed, and confirmed the same way they were found: by
+screenshotting a real Terminal.app window, not by reading exit codes. One frame
+carries all of it — see "Evidence" below. The findings are kept in full because the
+*reasoning* is what stops them coming back.
+
 ## The inline path renders — with three defects
 
 `printf '<html>…' | mcp-app.sh open -` in a real Terminal.app window: carbonyl took over
@@ -66,8 +73,22 @@ one takes longer than the 5s budget, `shown` is empty, the `else` branch runs, a
 inline browser never launches at all. The bug hides itself on a warm log and bites on a
 cold one.
 
-Fix: record the log size before starting the server and only scan past that offset, or
-have the server write its verdict to a per-run file the shell polls.
+**FIXED.** `open_app` records `log_mark=$(wc -c < "$LOG")` before starting the server
+and the wait loop scans `tail -c "+$((log_mark + 1))"` — only bytes this run wrote.
+`_run_inline` also moved OUT of the `if [ -n "$shown" ]` branch, which closes the
+cold-log hole: whether the verdict line arrived is a reporting question, and whether
+we inline was already settled before the server started.
+
+Confirmed twice, both against a warm log whose last entry disagreed with the truth:
+
+| run | last stale line in log | line the shell printed |
+|---|---|---|
+| terminal, inline | `displayed on system (fallback)` | `displayed on none (fallback declined)` |
+| terminal, from a non-tty (hook) | `displayed on none` | `displayed on system (fallback)` |
+
+Each printed its own verdict, and the second is the stronger test: the two runs are
+consecutive in one log and reported *different* answers, which the old code could not
+do — it returned the previous line on the first loop iteration every time.
 
 ### 2. Both the system browser and the inline browser open
 
@@ -84,6 +105,20 @@ The viewer cannot know the caller intends to inline. `mcp-app.sh` should tell it
 inline-ability *before* starting the server (target is `terminal`, no `--host`, `[ -t 1 ]`,
 an inline command exists) and pass something like `--no-fallback` so the server returns
 `none` instead of opening a browser.
+
+**FIXED.** `_plan_inline` runs before `nohup`, and when it produces a command
+`--no-fallback` goes on the server's argv. `display_targets.open_app` gained a
+`fallback` parameter; every degrade-to-`_open_system` site now goes through one
+`_degrade()` helper that returns `"none (fallback declined)"` instead.
+
+Confirmed by counting Safari's tabs across the run rather than trusting the log:
+1 window / 10 tabs / **0** on `127.0.0.1` before, during and after, while carbonyl
+drew the app in Terminal.app. `--no-fallback` was verified present on the real
+process argv (`ps`), not just in the code.
+
+The flag is correctly *absent* on the two paths that still need the browser fallback:
+`target none` (nothing to inline) and the hook's non-tty invocation, which duly
+reported `displayed on system (fallback)` and opened one tab.
 
 ### 3. carbonyl leaves the terminal in mouse-reporting mode
 
@@ -105,16 +140,121 @@ printf '\e[?1000l\e[?1002l\e[?1003l\e[?1006l\e[?1049l'
 appended to the inline command (and the exit status preserved), so quitting the browser
 returns a usable shell.
 
+**FIXED — but appending is not enough, and the first attempt at this failed.**
+
+Appending exactly that produced a wrapper of the shape
+`sh -c 'carbonyl …; printf reset'`, which looked right and did nothing. Ctrl-C is how
+you quit carbonyl, and Ctrl-C sends SIGINT to the whole foreground process **group** —
+the wrapper included. The wrapper died at the semicolon and never reached the printf.
+Measured, with the fix supposedly in place:
+
+    bash-3.2$ 35;79;28M35;77;25M35;76;23M35;75;21M35;74;19M …
+
+i.e. the exact defect, unchanged, on the only exit path anyone uses. Had it been signed
+off on "the printf is in the command string", this would have shipped as a fourth false
+pass.
+
+`_restore_modes` therefore **traps** rather than appends:
+
+```sh
+__mcp_app_reset() { printf '\033[?1000l…\033[?1049l'; }
+trap '__mcp_app_reset; exit 130' INT
+trap '__mcp_app_reset; exit 143' TERM
+trap '__mcp_app_reset; exit 129' HUP
+<browser>; __mcp_app_status=$?; __mcp_app_reset; exit "$__mcp_app_status"
+```
+
+Trapping converts death-by-signal into an ordinary exit that runs the reset first, and
+each path exits with the status it should. Confirmed: after Ctrl-C-equivalent SIGINT to
+the process group and ~50 cursor warps across the window (`CGWarpMouseCursorPosition`),
+the prompt is `bash-3.2$` and nothing else. `mcp-app.sh` still exits 130.
+
+Side benefit, unlooked-for: with the bare argv, SIGINT also killed the *script* that
+called `mcp-app.sh` — a harness around it never got its exit status. Under the trapped
+wrapper the caller survives and receives 130.
+
+Escapes are written as octal (`\033`), not literal ESC bytes: the command string is
+eval'd, logged and read by humans, and `printf` expands them itself.
+
+### 4. `target terminal` advertised only the route that does not apply here
+
+It printed "renders in a terminal browser inside a split pane — works in Ghostty, tmux,
+WezTerm, kitty and iTerm2" followed by `terminal host: none detected` — a failure
+report, in the one terminal where the inline route is the *point* rather than a
+consolation.
+
+**FIXED.** The note now names both routes and which one you are about to get, and
+`--detect` says what "none detected" means instead of leaving it as a bare negative:
+
+```
+  note: renders in a terminal browser, so it works over SSH on a headless box.
+        In Ghostty, tmux, WezTerm, kitty or iTerm2 the app opens in a split pane.
+        In a plain terminal (Terminal.app, xterm, bare SSH) there is nothing to
+        split, so it takes over THIS terminal until you quit the browser.
+    carbonyl  real     Chromium rendering into the terminal — closest to the real thing
+
+terminal host: none detected — no splitter here, so the app opens in THIS terminal
+               (foreground; quit the browser to get your shell back)
+```
+
+## Evidence
+
+One Terminal.app frame after quitting carbonyl carries all four results at once —
+this run's verdict line, no second browser, the exit status, and a clean prompt after
+the cursor was warped across the window:
+
+```
+TEST: inline path after fixes 1-3   pid=92472
+serving http://127.0.0.1:8777/app/index.html
+displayed on none (fallback declined)         <- this run's line, not a stale one (1)
+no split available here — opening in THIS terminal (quit the browser to return)
+=== mcp-app.sh exit status: 130 ===           <- status preserved through the wrapper
+=== POST-EXIT PROMPT BELOW: mouse moves must leave NO escape garbage ===
+bash-3.2$                                     <- clean. Before the fix: 35;79;28M35;77;25M… (3)
+```
+
+Safari across the same run: 1 window, 10 tabs, 0 on `127.0.0.1` (2).
+
+Method, for whoever verifies this next — the agent shell has no controlling tty
+(`/dev/tty` is "device not configured"), so printing escapes to your own stdout proves
+nothing. Drive a real window instead:
+
+- `osascript -e 'tell application "Terminal" to do script "bash /path/script.sh"'`
+- raise by window id, `screencapture -T <n> -x full.png`; `screencapture -R <rect>`
+  fails ("could not create image from rect"), so capture full screen and crop with PIL.
+  Screen is 2× Retina (3584×2240 for 1792×1120 pt); `bounds of window id N` × 2 crops
+  exactly to the window.
+- `get contents of tab 1 of window id N` reads the screen as TEXT — far better than
+  pixels for checking escape residue, and it is what caught the failed first attempt.
+- System Events keystroke is blocked (no accessibility permission). Send signals to the
+  process group instead: `kill -INT -<pgid>` is exactly what Ctrl-C does.
+- The cursor CAN be moved without accessibility permission, via
+  `CGWarpMouseCursorPosition` through `ctypes` on ApplicationServices. That is what
+  provokes the mouse-reporting escapes; without it the test proves nothing.
+- Screenshots carry a display colour profile (253 reads as ~232) — compare
+  distinctness, never absolute RGB.
+
 ## Not verified
 
-- **tmux** — not installed on this machine (`/usr/bin/screen` exists; `tmux` does not).
-  `_split_tmux` has still never been executed, and the `-b` behaviour for `left`/`top` on
-  older tmux is still unmeasured.
-- **`target terminal`'s advice text** is now stale. It prints "renders in a terminal
-  browser inside a split pane — works in Ghostty, tmux, WezTerm, kitty and iTerm2"
-  followed by `terminal host: none detected`, which reads as a failure in exactly the
-  terminal where the inline path is the intended route. It should say the inline path
-  covers this case.
+- **tmux** — still not installed on this machine (`/usr/bin/screen` exists; `tmux` does
+  not). `_split_tmux` has never executed, and `-b` for `left`/`top` on older tmux is
+  still unmeasured. Awaiting the operator's go-ahead to install it.
+- **Terminal.app's View > Split Pane.** Terminal does have a split-pane command in its
+  View menu, which would make it a genuine splitter rather than an inline-only host.
+  Not investigated further because it cannot be reached from here: Terminal's
+  AppleScript dictionary has no split verb, and the menu route needs System Events,
+  which is refused (`osascript is not allowed assistive access`, -1719). Even granted
+  that, a Terminal split pane offers no way to specify the command it runs — it would
+  need `write text` into the new shell, which is the racy approach this codebase
+  already rejected (it mangled a command into `llecho`; see `_open_iterm2`).
+- **The inline path ignores the configured terminal browser and theme.** `--host` and
+  `--inline-command` are called with the URL only (`terminal_browser.py:440` passes
+  `sys.argv[i+1:i+2]`), so `inline_command` re-derives both from defaults instead of
+  taking `_get browser` / `_get theme`. Today they agree by luck — `browser` is unset
+  and `theme` is `auto` — so `status` reporting `term brwsr: carbonyl` happens to be
+  true. Set `browser lynx` or `theme light` and the inline path will quietly do
+  something else while `status` claims otherwise. Same class as finding 1; left unfixed
+  because it was outside this pass's brief.
 
 ## The hook does not inline — confirmed
 
