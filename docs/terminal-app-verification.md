@@ -234,11 +234,47 @@ nothing. Drive a real window instead:
 - Screenshots carry a display colour profile (253 reads as ~232) — compare
   distinctness, never absolute RGB.
 
+## tmux — verified, all four positions (2026-08-07)
+
+tmux installed with the operator's approval (`brew install tmux`, 3.7b). `_split_tmux`
+had **never executed** before this; it now has, in a real tmux session inside
+Terminal.app, with the pane geometry read back from tmux itself and each result also
+confirmed by screenshot.
+
+| position | pane geometry (`list-panes`) | browser pane | verdict line |
+|---|---|---|---|
+| right  | browser `left=61`, shell `left=0`  | right  | `carbonyl in a tmux pane (right, dark theme)` |
+| left   | browser `left=0`, shell `left=61`  | left   | `… (left, dark theme)` |
+| top    | browser `top=0`, shell `top=15`    | top    | `… (top, dark theme)` |
+| bottom | browser `top=15`, shell `top=0`    | bottom | `… (bottom, dark theme)` |
+
+So `-b` is honoured on 3.7b: `left`/`top` really do place the pane *before* the current
+one, not merely on the same axis. The **older-tmux degradation is still unmeasured** —
+3.7b is far too new to exercise it. The code's claim that older tmux "ignores -b,
+landing right/below" remains an assumption, and is the one thing here not backed by a
+measurement.
+
+Two things this also confirmed in passing: inside tmux `_plan_inline` correctly finds a
+host and stands down (`--no-fallback` absent from the server's argv, split path taken),
+and the four runs printed four *different* correct verdict lines into one shared log —
+which the pre-fix scan could not have done.
+
+### `_keep_open` survives failures, not Ctrl-C — measured
+
+Same shape as defect 3, and worth writing down before someone "fixes" it:
+
+- `/usr/bin/false` in the wrapper → pane **stays**, showing
+  `[mcp-app-viewer] browser exited (1). Press Enter to close this pane.`
+  The absent-vs-broken case it was written for works.
+- SIGINT to the pane's process group → pane **closes** immediately; the wrapper dies at
+  the semicolon exactly as `_restore_modes` did before it was trapped.
+
+Left alone deliberately: a pane is disposable, and vanishing on a deliberate Ctrl-C is
+the behaviour you want there. It is only on the *inline* path — where the shell is
+handed back to you — that the signal path had to be trapped.
+
 ## Not verified
 
-- **tmux** — still not installed on this machine (`/usr/bin/screen` exists; `tmux` does
-  not). `_split_tmux` has never executed, and `-b` for `left`/`top` on older tmux is
-  still unmeasured. Awaiting the operator's go-ahead to install it.
 - **Terminal.app's View > Split Pane.** Terminal does have a split-pane command in its
   View menu, which would make it a genuine splitter rather than an inline-only host.
   Not investigated further because it cannot be reached from here: Terminal's
@@ -255,6 +291,12 @@ nothing. Drive a real window instead:
   true. Set `browser lynx` or `theme light` and the inline path will quietly do
   something else while `status` claims otherwise. Same class as finding 1; left unfixed
   because it was outside this pass's brief.
+- **`inline_command` does not refuse the `stub` engine.** A parallel session reclassified
+  Chawan `partial` → `stub` (3112324) and added a `stub` guard to `open_in_split`
+  (`terminal_browser.py:415`). `inline_command` still tests only `== "text"`
+  (`terminal_browser.py:484`), so `browser cha` would be launched inline and show an
+  empty page for a working app — precisely the false negative both guards exist to
+  prevent. Not fixed here to avoid editing that session's function underneath it.
 
 ## The hook does not inline — confirmed
 
