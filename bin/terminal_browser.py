@@ -94,6 +94,25 @@ def _browser_argv(name: str, url: str) -> list[str]:
     return [shutil.which(name) or name, url]
 
 
+def _keep_open(command: str) -> str:
+    """Wrap so the pane SURVIVES the browser exiting, and shows why it exited.
+
+    Terminals run a pane's command directly and close the pane when it returns. So a
+    crash, a missing binary, and a clean quit all look identical: the pane appears and
+    vanishes. That is unreadable — and it is the same absent-vs-broken confusion this
+    whole project exists to remove, reproduced in our own tooling.
+
+    Keeping the pane open costs one keypress and turns an invisible failure into a
+    legible one: exit code, plus whatever the browser printed on its way out.
+    """
+    return (
+        "/bin/sh -c " + shlex.quote(
+            f'{command}; printf "\n[mcp-app-viewer] browser exited (%s). '
+            f'Press Enter to close this pane." "$?"; read _'
+        )
+    )
+
+
 # --------------------------------------------------------------- terminal hosts ---
 def detect_host() -> str:
     """Which terminal are we inside? Checked most-specific first.
@@ -245,7 +264,7 @@ def open_in_split(
             "kitty, iTerm2). Run inside one, or use a browser target."
         )
 
-    command = " ".join(shlex.quote(part) for part in _browser_argv(name, url))
+    command = _keep_open(" ".join(shlex.quote(part) for part in _browser_argv(name, url)))
     ok, err = _SPLITTERS[host](command, (position or "right").strip().lower())
     if not ok:
         return False, f"{host} split failed: {err[:160]}"
