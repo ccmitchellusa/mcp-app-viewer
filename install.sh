@@ -100,8 +100,9 @@ else
 fi
 
 # ------------------------------------------------------------------- bins ----
-sed -i.bak "s|__MCP_APP_PROJECT_DIR__|$SCRIPT_DIR|g" "$SCRIPT_DIR/bin/mcp-app.sh"
-rm -f "$SCRIPT_DIR/bin/mcp-app.sh.bak"
+# No path substitution here any more: bin/mcp-app.sh derives PROJECT_DIR from its
+# own location. Substituting used to work exactly once -- the rewritten path was
+# then committed, so a fresh clone elsewhere kept pointing at the author's machine.
 chmod +x "$SCRIPT_DIR/bin/"*.sh "$SCRIPT_DIR/bin/"*.py
 ok "viewer scripts ready"
 

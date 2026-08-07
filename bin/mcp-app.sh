@@ -9,6 +9,7 @@
 #   mcp-app.sh                  status
 #   mcp-app.sh on | off         auto-open on tool results carrying an MCP App
 #   mcp-app.sh open <file|->    render one app's HTML now
+#   mcp-app.sh url <address>    point the SAME display target at a live URL
 #   mcp-app.sh last             re-open the most recently captured app
 #   mcp-app.sh stop             stop the local viewer server
 #   mcp-app.sh base <url|->     set/clear the origin used to resolve relative assets
@@ -21,7 +22,12 @@
 
 set -uo pipefail
 
-PROJECT_DIR="/Volumes/DATA/Code/mcp-app-viewer"
+# Derived at RUNTIME, never substituted in. install.sh used to sed a placeholder
+# here, which worked exactly once: the substituted path was then COMMITTED, so the
+# placeholder no longer existed and a fresh clone on another machine silently kept
+# pointing at the author's home directory. Deriving it removes the failure mode
+# rather than documenting it.
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="${MCP_APP_CONFIG_DIR:-$HOME/.config/mcp-app-viewer}"
 CONFIG="$CONFIG_DIR/config.sh"
 
@@ -159,6 +165,25 @@ case "${1:-status}" in
     ;;
   open)
     shift; open_app "${1:--}"
+    ;;
+  url)
+    shift
+    if [ -z "${1:-}" ]; then echo "usage: mcp-app.sh url <address>" >&2; exit 2; fi
+    # No local server: the page is already served by someone else. Everything else
+    # -- target, position, terminal browser, theme -- is deliberately the same, so
+    # "show me the live app" and "show me this app's HTML" land in the same pane
+    # with the same settings rather than being two unrelated tools.
+    "$PY" - "$1" "$(_get target "$MCP_APP_TARGET")" "$(_get position "$MCP_APP_POSITION")" \
+             "$(_get browser "")" "$(_get theme "auto")" "$PROJECT_DIR/bin" <<'PYEOF'
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent if "__file__" in dir() else "."))
+sys.path.insert(0, sys.argv[6])
+from display_targets import open_app
+url, target, position, browser, theme = sys.argv[1:6]
+used = open_app(url, target, position, browser or None, False, theme)
+print(f"displayed on {used}")
+print(f"url: {url}")
+PYEOF
     ;;
   last)
     [ -s "$LAST_HTML" ] || { echo "no app captured yet"; exit 0; }

@@ -66,6 +66,7 @@ worse than one that shows nothing.
 /mcp-app                    status
 /mcp-app on | off           auto-open when a tool result carries an MCP App
 /mcp-app open <file.html>   render one now  (or `-` for stdin)
+/mcp-app url <address>      point the same target at a LIVE url
 /mcp-app last               re-open the most recently captured app
 /mcp-app target <name>      system | chrome | safari | firefox | edge | brave | arc
                             | iterm2 | vscode | none
