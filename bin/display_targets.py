@@ -25,7 +25,9 @@ still show you the app — the URL is always printed.
 
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -134,6 +136,71 @@ def _open_iterm2(url: str, position: str = "right") -> bool:
     return True
 
 
+# ------------------------------------------------------- editor discovery ---
+# VS Code has forks — VSCodium, Cursor, Windsurf, Bob IDE — and the parts this
+# project touches are all fork-specific: the CLI binary name, the URI scheme its
+# handler answers on, and the extensions directory. Guessing any of them fails
+# SILENTLY and in the worst possible way: firing `vscode://` on a machine with both
+# installed opens a pane in the WRONG EDITOR rather than reporting an error.
+#
+# So discover instead of guessing. Every fork ships a ``product.json`` carrying
+# exactly what we need — ``applicationName``, ``urlProtocol``, ``dataFolderName`` —
+# and it is authoritative for that build. Resolve the CLI to its app bundle, read
+# the file, done. A fork nobody has heard of works without a code change.
+_EDITOR_CLI_CANDIDATES = ("code", "codium", "cursor", "windsurf", "bob", "code-insiders")
+
+_VSCODE_DEFAULTS = {
+    "cli": "code",
+    "url_protocol": "vscode",
+    "data_folder": ".vscode",
+}
+
+
+def _find_product_json(cli_path: str) -> dict | None:
+    """Walk up from a resolved CLI binary to its build's product.json.
+
+    Layouts differ (macOS: ``<app>/Contents/Resources/app/bin/code``; Linux:
+    ``/usr/share/code/bin/code`` with ``resources/app/product.json``), so probe both
+    shapes at each ancestor rather than hardcoding one platform's path.
+    """
+    here = pathlib.Path(os.path.realpath(cli_path)).parent
+    for parent in [here, *here.parents][:6]:
+        for candidate in (parent / "product.json", parent / "resources" / "app" / "product.json"):
+            if candidate.is_file():
+                try:
+                    return json.loads(candidate.read_text())
+                except (OSError, ValueError):
+                    return None
+    return None
+
+
+def editor_profile() -> dict:
+    """The editor triple: {cli, url_protocol, data_folder, extensions_dir}.
+
+    Env overrides win, so a fork whose product.json lies (or is absent) is still
+    usable without patching this file.
+    """
+    cli = os.environ.get("MCP_APP_EDITOR_CLI") or ""
+    if not cli or not shutil.which(cli):
+        cli = next((c for c in _EDITOR_CLI_CANDIDATES if shutil.which(c)), "")
+
+    profile = dict(_VSCODE_DEFAULTS)
+    if cli:
+        profile["cli"] = cli
+        product = _find_product_json(shutil.which(cli) or cli)
+        if product:
+            profile["url_protocol"] = product.get("urlProtocol") or profile["url_protocol"]
+            profile["data_folder"] = product.get("dataFolderName") or profile["data_folder"]
+
+    profile["url_protocol"] = os.environ.get("MCP_APP_EDITOR_URI_SCHEME") or profile["url_protocol"]
+    profile["data_folder"] = os.environ.get("MCP_APP_EDITOR_DATA_FOLDER") or profile["data_folder"]
+    profile["extensions_dir"] = os.environ.get("MCP_APP_EDITOR_EXT_DIR") or str(
+        pathlib.Path.home() / profile["data_folder"] / "extensions"
+    )
+    profile["found"] = bool(cli)
+    return profile
+
+
 # A companion VS Code extension would register a URI handler and call
 # `simpleBrowser.show`. Until one exists, the vscode target cannot work — see the
 # comment in _open_vscode.
@@ -141,58 +208,59 @@ _VSCODE_HELPER_EXTENSION = "ccmitchellusa.mcp-app-viewer"
 
 
 def _open_vscode(url: str, position: str = "right") -> bool:
-    """Show the app in VS Code's built-in Simple Browser, beside the editor.
+    """Show the app in the editor's built-in Simple Browser, beside your work.
 
-    **VS Code has no CLI for this**, and the obvious guess is a trap. An earlier
-    version ran ``code --open-url <url>`` and returned True on exit 0. Measured on
-    1.128.1: ``--open-url`` is not in ``--help`` at all, and ``code`` exits **0** for
-    a bogus URL *and* for a completely invented flag. So the exit code carries no
-    signal, and that check reported success while opening nothing — the target
-    silently swallowed every render instead of falling back to a browser.
+    **The editor has no CLI for this**, and the obvious guess is a trap. An earlier
+    version ran ``code --open-url <url>`` and returned True on exit 0. Measured on VS
+    Code 1.128.1: ``--open-url`` is not in ``--help`` at all, and ``code`` exits **0**
+    for a bogus URL *and* for a completely invented flag. So the exit code carries no
+    signal, and that check reported success while opening nothing.
 
     Worse than a no-op: ``code --open-url http://example.invalid/nonsense`` made VS
     Code pop up "The extension 'example.invalid' cannot be installed because it was
     not found" — it parses the URL's host as a ``publisher.name`` extension id. So the
     old code took an active wrong action on every render, invisibly.
 
-    Simple Browser is reachable only through the ``simpleBrowser.show`` *command*,
-    and commands cannot be invoked from the CLI. So the supported route is the
-    companion extension in ``vscode-extension/`` — installed by ``install.sh`` — which
-    registers a URI handler ``code --open-url vscode://...`` CAN reach. Without it the
-    target is honestly unavailable: say so and fall back, rather than pretending.
+    Simple Browser is reachable only through the ``simpleBrowser.show`` *command*, and
+    commands cannot be invoked from the CLI. So the route is the companion extension in
+    ``vscode-extension/``, installed by ``install.sh``, registering a URI handler the
+    CLI CAN reach. Without it this target is honestly unavailable: say so and fall back.
 
-    Unlike iTerm2, VS Code has real editor-group placement, so ``position`` here means
+    Works against any VS Code fork — the scheme and paths come from the build's own
+    product.json (see ``editor_profile``), never from a hardcoded guess.
+
+    Unlike iTerm2, the editor has real editor-group placement, so ``position`` means
     what it says in all four directions.
     """
-    code = shutil.which("code") or shutil.which("code-insiders")
-    if not code:
-        _warn("vscode target needs the `code` CLI on PATH (Shell Command: Install 'code')")
-        return False
-
-    installed = subprocess.run(
-        [code, "--list-extensions"], capture_output=True, text=True
-    )
-    have_helper = _VSCODE_HELPER_EXTENSION in installed.stdout.split()
-    if not have_helper:
+    profile = editor_profile()
+    if not profile["found"]:
         _warn(
-            "VS Code has no CLI that opens Simple Browser, and `code` exits 0 even for "
-            "invented flags, so success cannot be detected. Showing the app in a browser "
-            "instead. (A companion extension exposing a URI handler would fix this.)"
+            "vscode target needs an editor CLI on PATH "
+            f"(looked for: {', '.join(_EDITOR_CLI_CANDIDATES)}). "
+            "Set MCP_APP_EDITOR_CLI if yours is named something else."
         )
         return False
 
-    # The helper's URI handler routes to simpleBrowser.show beside the editor.
+    cli = profile["cli"]
+    installed = subprocess.run([cli, "--list-extensions"], capture_output=True, text=True)
+    if _VSCODE_HELPER_EXTENSION not in installed.stdout.split():
+        _warn(
+            f"{cli}: the companion extension is not installed, and there is no CLI that "
+            "opens Simple Browser, so success cannot be detected. Showing the app in a "
+            "browser instead. Run install.sh to add it, then reload the editor."
+        )
+        return False
+
     pos = (position or "right").strip().lower()
     handler_uri = (
-        f"vscode://{_VSCODE_HELPER_EXTENSION}/open"
+        f"{profile['url_protocol']}://{_VSCODE_HELPER_EXTENSION}/open"
         f"?url={quote(url, safe='')}&position={quote(pos, safe='')}"
     )
-    subprocess.run([code, "--open-url", handler_uri], capture_output=True, text=True)
-    # Still not verifiable from out here — the helper being installed is the only
-    # evidence available, and it is evidence about the mechanism rather than about an
-    # exit code that means nothing. UNVERIFIED: no such extension exists yet, so this
-    # branch has never run. Given --open-url was observed misparsing a plain URL, the
-    # vscode:// form needs a real test the day the helper ships.
+    subprocess.run([cli, "--open-url", handler_uri], capture_output=True, text=True)
+    # Not verifiable from out here — the helper being installed is the only evidence
+    # available, and it is evidence about the mechanism rather than about an exit code
+    # that means nothing. The extension logs what it actually did to its own output
+    # channel, which is where a "nothing appeared" report gets diagnosed.
     return True
 
 
@@ -223,3 +291,13 @@ def open_app(url: str, target: str | None, position: str = "right") -> str:
         return name
     _open_system(url)
     return "system (fallback)"
+
+
+if __name__ == "__main__":
+    # `display_targets.py --editor-profile` prints the discovered triple as JSON, so
+    # install.sh installs the extension where THIS editor will look for it rather than
+    # where VS Code would. One discovery implementation, two callers.
+    if "--editor-profile" in sys.argv:
+        print(json.dumps(editor_profile(), indent=2))
+    else:
+        print(__doc__)

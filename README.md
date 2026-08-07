@@ -108,7 +108,7 @@ to a browser and says why.
 split and below a horizontal one, so `left`/`top` select the same axis and say so
 rather than silently doing something else.
 
-### VS Code: why it needs a companion extension
+### VS Code (and forks): why it needs a companion extension
 
 VS Code exposes Simple Browser only as the `simpleBrowser.show` **command**, and
 commands cannot be invoked from the CLI. The obvious guess is a trap, measured on
@@ -137,6 +137,30 @@ page render arbitrary content inside the editor, wearing the editor's chrome. Th
 accepts **http on loopback only**, by parsed hostname against an exact allow-list (a
 `startsWith('localhost')` check would pass `localhost.evil.com`), and it says why it
 refused rather than failing silently.
+
+**Any VS Code fork works** — VSCodium, Cursor, Windsurf, Bob IDE. Three things differ
+per fork and all three fail *silently* if assumed: the CLI binary name, the URI scheme
+its handler answers on, and the extensions directory. Firing `vscode://` on a machine
+with two editors installed opens a pane in the **wrong editor** rather than erroring.
+
+So they are discovered, not guessed. Every fork ships a `product.json` carrying exactly
+`applicationName`, `urlProtocol`, and `dataFolderName`, and it is authoritative for that
+build. `install.sh` and the viewer both read it through one implementation:
+
+```bash
+python3 bin/display_targets.py --editor-profile
+{ "cli": "code", "url_protocol": "vscode", "data_folder": ".vscode", ... }
+```
+
+A fork nobody has heard of works with no code change. Override any part with
+`MCP_APP_EDITOR_CLI`, `MCP_APP_EDITOR_URI_SCHEME`, `MCP_APP_EDITOR_DATA_FOLDER`, or
+`MCP_APP_EDITOR_EXT_DIR` if a build's product.json is absent or wrong.
+
+One thing that is *not* discoverable: whether a fork still ships Simple Browser. It is a
+built-in (`vscode.simple-browser`) and most forks keep built-ins, but a stripped build
+has no pane at any position. The extension's output channel (`View -> Output -> MCP App
+Viewer`) says which command path ran, which is how that gets diagnosed rather than
+guessed at.
 
 **The Claude Code and Codex VS Code extensions change nothing here.** They run the same
 CLI and the same hooks, so the hook fires normally inside VS Code; only the display

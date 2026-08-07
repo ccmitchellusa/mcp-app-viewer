@@ -61,27 +61,42 @@ sed "s|__MCP_APP_PROJECT_DIR__|$SCRIPT_DIR|g" "$SCRIPT_DIR/commands/mcp-app.md" 
   > "$CMD_DIR/mcp-app.md"
 ok "/mcp-app command installed"
 
-# -------------------------------------------------------- vscode extension ----
+# -------------------------------------------------------- editor extension ----
 # Optional and best-effort: only the `vscode` display target needs it, and a machine
-# without VS Code should not see an error for a target it will never use.
+# without an editor should not see an error for a target it will never use.
 #
-# Installed by COPY into the extensions dir rather than a .vsix. Packaging a vsix
-# needs `vsce`, which needs npm — and the whole point of writing this extension in
-# plain dependency-free JS was to not drag a node toolchain into a jq+python project.
-# VS Code discovers a plain folder here; verified with `code --list-extensions`.
-if command -v code >/dev/null 2>&1; then
-  EXT_DEST="$HOME/.vscode/extensions/ccmitchellusa.mcp-app-viewer-0.1.0"
+# Works against ANY VS Code fork (VSCodium, Cursor, Windsurf, Bob IDE). The CLI name,
+# URI scheme, and extensions directory are DISCOVERED from the build's own
+# product.json rather than assumed — guessing them fails silently and in the worst
+# way, since firing `vscode://` on a machine with two editors opens a pane in the
+# wrong one instead of erroring. display_targets.py owns that discovery; this just
+# asks it, so there is one implementation and not two that drift.
+#
+# Installed by COPY rather than a .vsix: packaging one needs `vsce`, which needs npm,
+# and the extension is dependency-free plain JS precisely so this project does not
+# grow a node toolchain.
+EDITOR_PROFILE=$("${MCP_APP_PYTHON:-python3}" "$SCRIPT_DIR/bin/display_targets.py" --editor-profile 2>/dev/null)
+EDITOR_FOUND=$(printf '%s' "$EDITOR_PROFILE" | sed -n 's/.*"found": *\([a-z]*\).*/\1/p')
+
+if [ "$EDITOR_FOUND" = "true" ]; then
+  EDITOR_CLI=$(printf '%s' "$EDITOR_PROFILE" | sed -n 's/.*"cli": *"\([^"]*\)".*/\1/p')
+  EDITOR_EXT_DIR=$(printf '%s' "$EDITOR_PROFILE" | sed -n 's/.*"extensions_dir": *"\([^"]*\)".*/\1/p')
+  EDITOR_SCHEME=$(printf '%s' "$EDITOR_PROFILE" | sed -n 's/.*"url_protocol": *"\([^"]*\)".*/\1/p')
+
+  EXT_DEST="$EDITOR_EXT_DIR/ccmitchellusa.mcp-app-viewer-0.1.0"
   mkdir -p "$EXT_DEST"
   cp "$SCRIPT_DIR/vscode-extension/package.json" "$SCRIPT_DIR/vscode-extension/extension.js" "$EXT_DEST/"
-  if code --list-extensions 2>/dev/null | grep -qx "ccmitchellusa.mcp-app-viewer"; then
-    ok "VS Code extension installed (reload VS Code to activate: Developer: Reload Window)"
+
+  if "$EDITOR_CLI" --list-extensions 2>/dev/null | grep -qx "ccmitchellusa.mcp-app-viewer"; then
+    ok "editor extension installed for '$EDITOR_CLI' (scheme ${EDITOR_SCHEME}://) — reload the editor to activate"
   else
     # Copied but not discovered — report it rather than claim success, since the
     # vscode target checks exactly this listing before it will try.
-    printf '  \033[33m!!\033[0m VS Code extension copied but not listed; the vscode target will fall back\n'
+    printf '  \033[33m!!\033[0m copied to %s but "%s --list-extensions" does not show it; the vscode target will fall back\n' \
+      "$EXT_DEST" "$EDITOR_CLI"
   fi
 else
-  ok "VS Code not found — skipping the companion extension (only the vscode target needs it)"
+  ok "no editor CLI found — skipping the companion extension (only the vscode target needs it)"
 fi
 
 # ------------------------------------------------------------------- bins ----
