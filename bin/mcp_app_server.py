@@ -40,8 +40,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from display_targets import open_app as _open_on_target  # noqa: E402
 
 
-def _show(url: str, target: str | None, position: str = "right") -> None:
-    used = _open_on_target(url, target, position)
+def _show(
+    url: str,
+    target: str | None,
+    position: str = "right",
+    terminal_browser: str | None = None,
+    allow_text: bool = False,
+) -> None:
+    used = _open_on_target(url, target, position, terminal_browser, allow_text)
     print(f"mcp-app-viewer: displayed on {used}")
 
 _MAX_PROXY_BYTES = 32 * 1024 * 1024
@@ -100,13 +106,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--browser",
         default=None,
-        help="display target: system | chrome | safari | firefox | iterm2 | vscode | none",
+        help="display target: system | chrome | safari | firefox | iterm2 | vscode | terminal | none",
     )
     ap.add_argument(
         "--position",
         default="right",
         choices=["right", "left", "top", "bottom"],
-        help="pane position for split-pane targets (iterm2, vscode). Default: right.",
+        help="pane position for split-pane targets (iterm2, vscode, terminal). Default: right.",
+    )
+    ap.add_argument(
+        "--terminal-browser",
+        default=None,
+        help="which terminal browser the 'terminal' target uses (default: best engine found)",
+    )
+    ap.add_argument(
+        "--fallback-preview",
+        action="store_true",
+        help=(
+            "allow a TEXT-ONLY terminal browser (lynx, w3m). These cannot render MCP "
+            "Apps -- use this only to preview the text fallback a non-visual client gets."
+        ),
     )
     ap.add_argument("--assets-dir", default=None, help="optional local dir mounted at /")
     ap.add_argument("--verbose", action="store_true")
@@ -133,7 +152,12 @@ def main(argv: list[str] | None = None) -> int:
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), _make_handler(stage, args.base_url))
     if not args.no_open:
-        threading.Timer(0.4, lambda: _show(url, args.browser, args.position)).start()
+        threading.Timer(
+            0.4,
+            lambda: _show(
+                url, args.browser, args.position, args.terminal_browser, args.fallback_preview
+            ),
+        ).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

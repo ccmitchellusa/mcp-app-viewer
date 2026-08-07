@@ -12,7 +12,8 @@
 #   mcp-app.sh last             re-open the most recently captured app
 #   mcp-app.sh stop             stop the local viewer server
 #   mcp-app.sh base <url|->     set/clear the origin used to resolve relative assets
-#   mcp-app.sh target <name>    where to display: system|chrome|safari|firefox|iterm2|vscode|none
+#   mcp-app.sh target <name>    where to display: system|chrome|safari|firefox|iterm2|vscode|terminal|none
+#   mcp-app.sh browser [name]   which TERMINAL browser the 'terminal' target uses
 #   mcp-app.sh assets <dir|->   local dir serving the app's relative assets
 #   mcp-app.sh position <where> pane placement for split targets: right|left|top|bottom
 #   mcp-app.sh log              tail the activity log
@@ -100,9 +101,11 @@ open_app() { # <file|->
   local base;   base=$(_get base "$MCP_APP_BASE_URL")
   local assets; assets=$(_get assets "$MCP_APP_ASSETS")
   local pos; pos=$(_get position "$MCP_APP_POSITION")
+  local tb;  tb=$(_get browser "")
   local args=(--html-file "$LAST_HTML" --port "$MCP_APP_PORT" --browser "$target" --position "$pos")
   [ -n "$base" ]   && args+=(--base-url "$base")
   [ -n "$assets" ] && args+=(--assets-dir "$assets")
+  [ -n "$tb" ]     && args+=(--terminal-browser "$tb")
 
   nohup "$PY" "$PROJECT_DIR/bin/mcp_app_server.py" "${args[@]}" >> "$LOG" 2>&1 &
   echo $! > "$PIDFILE"
@@ -148,7 +151,7 @@ case "${1:-status}" in
   target)
     shift
     case "${1:-}" in
-      system|chrome|safari|firefox|edge|brave|arc|iterm2|vscode|none)
+      system|chrome|safari|firefox|edge|brave|arc|iterm2|vscode|terminal|none)
         _set target "$1"; echo "display target: $1"
         # NOTE: written as `if`, not `[ ... ] && echo`. A trailing &&-guard that
         # evaluates false makes it the branch's last status, so the whole script
@@ -160,9 +163,14 @@ case "${1:-status}" in
         if [ "$1" = "chrome" ]; then
           echo "  note: chrome-devtools tooling can then inspect the rendered app"
         fi
+        if [ "$1" = "terminal" ]; then
+          echo "  note: renders in a terminal browser inside a split pane — works in Ghostty,"
+          echo "        tmux, WezTerm, kitty and iTerm2, and over SSH on a headless box."
+          "$PY" "$PROJECT_DIR/bin/terminal_browser.py" --detect 2>/dev/null
+        fi
         ;;
       "") echo "display target: $(_get target "$MCP_APP_TARGET")" ;;
-      *)  echo "unknown target '${1}'. Use: system|chrome|safari|firefox|edge|brave|arc|iterm2|vscode|none" >&2; exit 2 ;;
+      *)  echo "unknown target '${1}'. Use: system|chrome|safari|firefox|edge|brave|arc|iterm2|vscode|terminal|none" >&2; exit 2 ;;
     esac
     ;;
   position)
@@ -177,6 +185,24 @@ case "${1:-status}" in
       "") echo "pane position: $(_get position "$MCP_APP_POSITION")" ;;
       *)  echo "unknown position '${1}'. Use: right|left|top|bottom" >&2; exit 2 ;;
     esac
+    ;;
+  browser)
+    shift
+    if [ -z "${1:-}" ]; then
+      echo "terminal browser: $(_get browser "auto") (auto = best engine available)"
+      echo
+      echo "detected:"
+      "$PY" "$PROJECT_DIR/bin/terminal_browser.py" --detect 2>/dev/null
+      echo
+      echo "  '!' marks a TEXT-ONLY browser. Those cannot render MCP Apps -- the apps"
+      echo "  build their content with JavaScript, so a text browser shows an empty page"
+      echo "  for a working app. Selecting one is allowed but only previews the text"
+      echo "  fallback (what a non-visual client receives), never the app itself."
+    elif [ "$1" = "auto" ] || [ "$1" = "-" ]; then
+      _set browser ""; echo "terminal browser: auto (best engine available)"
+    else
+      _set browser "$1"; echo "terminal browser: $1"
+    fi
     ;;
   assets)
     shift
@@ -197,6 +223,7 @@ case "${1:-status}" in
     echo "  position  : $(_get position "$MCP_APP_POSITION")"
     echo "  asset base: $(_get base "${MCP_APP_BASE_URL:-}")"
     echo "  asset dir : $(_get assets "${MCP_APP_ASSETS:-}")"
+    echo "  term brwsr: $(_get browser "auto")"
     echo "  last app  : $([ -s "$LAST_HTML" ] && echo "$(wc -c < "$LAST_HTML" | tr -d ' ') bytes captured" || echo "none")"
     echo "  log       : $LOG"
     ;;

@@ -12,6 +12,8 @@ So the display is a pluggable TARGET rather than a hardcoded ``webbrowser.open``
     (position: right (default) | bottom | left | top — for split-pane targets)
     chrome|safari|...   a specific browser by name
     iterm2              split the current iTerm2 window, app pane on the right
+    terminal            split ANY terminal and render in a terminal browser
+                        (Ghostty/tmux/WezTerm/kitty/iTerm2; works headless over SSH)
     vscode              VS Code's Simple Browser, beside the editor
     none                serve only and print the URL
 
@@ -266,10 +268,29 @@ def _open_vscode(url: str, position: str = "right") -> bool:
     return True
 
 
-def open_app(url: str, target: str | None, position: str = "right") -> str:
+def open_app(
+    url: str,
+    target: str | None,
+    position: str = "right",
+    browser: str | None = None,
+    allow_text: bool = False,
+) -> str:
     """Open ``url`` on ``target``; returns the target actually used."""
     name = (target or "system").strip().lower()
     if name in {"none", "off", ""}:
+        return "none"
+
+    if name in {"terminal", "term"}:
+        import terminal_browser
+
+        ok, message = terminal_browser.open_in_split(url, position, browser, allow_text)
+        if ok:
+            return f"terminal: {message}"
+        # The message is the whole value here — "no terminal browser installed" and
+        # "lynx cannot render this" need completely different actions from the user.
+        _warn(message)
+        if _open_system(url):
+            return "system (fallback)"
         return "none"
 
     if name in {"iterm2", "iterm"}:

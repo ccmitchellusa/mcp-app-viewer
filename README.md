@@ -85,6 +85,7 @@ worse than one that shows nothing.
 | `chrome`, `safari`, … | A named browser. **Chrome is worth choosing** — chrome-devtools tooling attaches to it, so an app opened there can be *inspected* programmatically, not just looked at. |
 | `iterm2` | Splits the current iTerm2 window and renders in a browser pane beside the session. |
 | `vscode` | VS Code's built-in Simple Browser, beside the editor, via the bundled companion extension. Real four-way placement. |
+| `terminal` | Splits **any** terminal (Ghostty, tmux, WezTerm, kitty, iTerm2) and renders in a terminal browser. The only target that works headless over SSH. Engine matters — see below. |
 | `none` | Serve only, print the URL. Correct for headless or remote agents, where opening a browser either fails or opens it on the wrong machine. |
 
 ### iTerm2 setup (one time)
@@ -167,6 +168,48 @@ CLI and the same hooks, so the hook fires normally inside VS Code; only the disp
 surface differs. Note also that the old "Debugger for Chrome" extension is deprecated in
 favour of `ms-vscode.js-debug` — irrelevant to this project, which uses the built-in
 Simple Browser and depends on neither.
+
+### Terminal browsers: the engine is the whole point
+
+Most terminals split *terminals*, not web views — iTerm2's browser pane is the
+exception, not the rule. But a pane that runs a program can run a browser, which
+solves "no web view" for every terminal at once, and is the only thing that works on
+a headless box where a window cannot open and a printed URL is useless.
+
+**Which browser decides whether this helps or harms.** MCP Apps render through web
+components — custom elements whose content JavaScript builds into shadow DOM:
+
+| browser | engine | what you get |
+|---|---|---|
+| `carbonyl` | Chromium | real rendering; closest to the truth |
+| `browsh` | headless Firefox | real rendering; needs Firefox |
+| `cha` (Chawan) | partial JS | better than text, not authoritative |
+| `lynx`, `w3m`, `links`, `elinks` | **none** | an **empty page** — for a working app |
+
+A text browser showing nothing for a healthy app is a **false negative**, and acting on
+it means debugging a bug that does not exist. That is the confusion this project
+exists to remove, so text browsers are **refused by default** and say why.
+
+They are still useful for the *opposite* question. A text-only render is exactly what a
+non-visual client receives from the MCP Apps text fallback, so `--fallback-preview`
+enables them deliberately — for previewing the fallback, never for judging the app.
+
+```
+/mcp-app target terminal
+/mcp-app browser            # list detected, with engine class
+/mcp-app browser carbonyl   # pin one
+/mcp-app browser auto       # best engine available (default)
+```
+
+**How the pixels happen:** these do not use sixel or the kitty graphics protocol. They
+use 24-bit truecolor ANSI plus the Unicode half-block `▀` (U+2580) — foreground colour
+paints the top half of a cell, background the bottom, so each cell carries two vertical
+pixels. Carbonyl additionally hooks Chromium's compositor so *text draws as real text*
+rather than as coloured blocks, which is why it stays crisp and selectable.
+
+The honest consequence is resolution: a 100x50 pane is roughly 100x100 effective
+pixels. Ample for *is it blank, is the content there, is the layout roughly right* —
+useless for judging typography or spacing. For that, use `chrome`.
 
 ## Assets
 
