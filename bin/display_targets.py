@@ -257,9 +257,11 @@ def _open_vscode(url: str, position: str = "right") -> bool:
         f"?url={quote(url, safe='')}&position={quote(pos, safe='')}"
     )
     subprocess.run([cli, "--open-url", handler_uri], capture_output=True, text=True)
-    # Not verifiable from out here — the helper being installed is the only evidence
-    # available, and it is evidence about the mechanism rather than about an exit code
-    # that means nothing. The extension logs what it actually did to its own output
+    # VERIFIED end to end on VS Code 1.128.1 (2026-08-07): renders a Simple Browser
+    # pane in a real editor group on the right. NOT yet verified on any fork — the
+    # discovery above removes the guessing, but a fork that stripped Simple Browser
+    # would still have no pane. Not verifiable from out here either way: the exit code
+    # means nothing, so the extension logs what it actually did to its own output
     # channel, which is where a "nothing appeared" report gets diagnosed.
     return True
 
