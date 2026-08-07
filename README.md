@@ -199,6 +199,25 @@ text browser there is nothing to see even in principle. (This table previously c
 "partial" on the strength of having a JS engine — a guess presented as a fact, corrected
 by measuring.)
 
+This is version-pinned, so re-test rather than trusting it if Chawan moves on. Serve
+this and view it with `cha -d -o buffer.scripting=true <url>`; "CALLBACK-FIRED" means
+the tier can be upgraded:
+
+```html
+<div id="log">CALLBACK-NEVER-FIRED</div><x-t></x-t>
+<script>
+customElements.define('x-t', class extends HTMLElement {
+  connectedCallback() {
+    this.attachShadow({mode:'open'}).innerHTML = '<b>SHADOW-CONTENT</b>';
+    document.getElementById('log').textContent = 'CALLBACK-FIRED';
+  }
+});
+</script>
+```
+
+Avoid `setTimeout` in the probe — it hangs `cha -d`, which cost a five-minute timeout
+here.)
+
 A text browser showing nothing for a healthy app is a **false negative**, and acting on
 it means debugging a bug that does not exist. That is the confusion this project
 exists to remove, so text browsers are **refused by default** and say why.
