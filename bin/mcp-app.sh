@@ -73,6 +73,32 @@ _set() { # <key> <value>
 # affect the server that actually starts, not just the number printed by `status`.
 MCP_APP_PORT=$(_get port "$MCP_APP_PORT")
 
+# On a plain terminal -- xterm, Terminal.app, a serial console, SSH with no
+# multiplexer -- there is nothing to split, and falling back to a windowing browser
+# is no fallback at all on a headless box. So run the browser in THIS terminal.
+#
+# It has to happen here, not in the viewer: that process is detached (nohup, stdout
+# to the log) and owns no terminal. Foreground means blocking until you quit the
+# browser, which is right for a command you typed and WRONG for the auto-open hook,
+# so this never runs from the hook -- MCP_APP_NO_INLINE=1 is set there.
+_maybe_inline() {
+  [ "$(_get target "$MCP_APP_TARGET")" = "terminal" ] || return 0
+  [ -z "${MCP_APP_NO_INLINE:-}" ] || return 0
+  [ -t 1 ] || return 0                       # not a terminal we can draw in
+  [ -z "$("$PY" "$PROJECT_DIR/bin/terminal_browser.py" --host 2>/dev/null)" ] || return 0
+
+  local cmd
+  cmd=$("$PY" "$PROJECT_DIR/bin/terminal_browser.py" --inline-command "http://127.0.0.1:$MCP_APP_PORT/app/index.html" 2>/dev/null)
+  if [ -z "$cmd" ]; then
+    echo "no terminal browser installed, and this terminal cannot split." >&2
+    echo "  install one:  brew install carbonyl    (or npm i -g carbonyl)" >&2
+    echo "  or run tmux, which makes the split path work on any terminal." >&2
+    return 0
+  fi
+  echo "no split available here — opening in THIS terminal (quit the browser to return)"
+  eval "$cmd"
+}
+
 _server_running() {
   [ -f "$PIDFILE" ] || return 1
   kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
@@ -144,6 +170,7 @@ open_app() { # <file|->
     done
     if [ -n "$shown" ]; then
       echo "${shown#mcp-app-viewer: }"
+      _maybe_inline
     else
       echo "displayed on: (no confirmation yet — see '/mcp-app log')"
     fi

@@ -402,7 +402,47 @@ def open_in_split(
     return True, f"{name} in {article} {host} pane ({position}{theme_note}){caveat}"
 
 
+def inline_command(url: str, browser: str | None = None, theme: str | None = None,
+                   allow_text: bool = False) -> tuple[bool, str]:
+    """The command to run a terminal browser IN THE CURRENT terminal.
+
+    The split path cannot serve a plain terminal — xterm, Terminal.app, a serial
+    console, an SSH session with no multiplexer. And the fallback to a windowing
+    browser is no fallback at all on a headless box: there is nothing to open.
+
+    Foreground rendering has to be issued by mcp-app.sh rather than here, because
+    the viewer process is detached (nohup, stdout to the log) and owns no terminal.
+    So this returns the command and lets the caller exec it.
+    """
+    available = detect()
+    if not available:
+        return False, "no terminal browser installed (brew install carbonyl)"
+    name = (browser or "").strip().lower() or available[0]
+    if name not in BROWSERS:
+        return False, f"unknown terminal browser {name!r}"
+    if not shutil.which(name):
+        return False, f"{name} is not installed"
+    if BROWSERS[name]["engine"] == "text" and not allow_text:
+        return False, f"{name} has no JS engine; it would show an empty page for a working app"
+
+    want = (theme or "auto").strip().lower()
+    resolved = detect_system_theme() if want == "auto" else want
+    parts = _browser_argv(name, url)
+    parts[1:1] = _theme_argv(name, resolved)
+    bindir = _runtime_path_prefix(name)
+    argv = " ".join(shlex.quote(x) for x in parts)
+    return True, (f"PATH={shlex.quote(bindir)}:$PATH {argv}" if bindir else argv)
+
+
 if __name__ == "__main__":
+    if "--inline-command" in sys.argv:
+        i = sys.argv.index("--inline-command")
+        ok, out = inline_command(*sys.argv[i + 1 : i + 2])
+        print(out if ok else "")
+        raise SystemExit(0 if ok else 1)
+    if "--host" in sys.argv:
+        print(detect_host())
+        raise SystemExit(0)
     if "--detect" in sys.argv:
         print(describe())
         print(f"\nterminal host: {detect_host() or 'none detected'}")

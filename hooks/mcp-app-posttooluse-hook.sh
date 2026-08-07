@@ -72,6 +72,8 @@ if [ -z "${html//[[:space:]]/}" ]; then
   esac
 fi
 
-printf '%s' "$html" | bash "$PROJECT_DIR/bin/mcp-app.sh" open - >> "$LOG" 2>&1
+# Never inline from the hook: a foreground browser would block the agent's
+# session until someone quit it, which is a wedge, not a feature.
+printf '%s' "$html" | MCP_APP_NO_INLINE=1 bash "$PROJECT_DIR/bin/mcp-app.sh" open - >> "$LOG" 2>&1
 log "rendered app from tool_use_id=$tool_use_id"
 exit 0

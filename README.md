@@ -203,6 +203,21 @@ enables them deliberately — for previewing the fallback, never for judging the
 /mcp-app browser auto       # best engine available (default)
 ```
 
+**Plain terminals (no splits, no windowing).** xterm, Terminal.app, a serial console,
+an SSH session with no multiplexer — there is nothing to split, and falling back to a
+windowing browser is no fallback at all on a headless box. So `terminal` runs the
+browser in **this** terminal instead, blocking until you quit it. That is right for a
+command you typed and wrong for the auto-open hook, so the hook never does it.
+
+`tmux` is the better answer if you have it: it makes the split path work on any
+terminal, over SSH, including ones with no windowing at all.
+
+**What genuinely will not work:** a terminal without 24-bit colour or Unicode. Carbonyl
+draws with truecolor ANSI and the half-block `▀`; a VT100-class terminal renders neither.
+There is no honest fallback there — a text browser would show an *empty page* for these
+apps, which is worse than nothing. On such a terminal, use `--fallback-preview` to read
+the text fallback and accept you cannot verify the app itself.
+
 **Light/dark follows your OS.** Real browsers read `prefers-color-scheme` themselves, so
 every other target honours your system setting for free. Carbonyl does not — it is
 headless Chromium, which reports **light** no matter what the desktop says (measured:
