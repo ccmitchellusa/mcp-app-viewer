@@ -94,6 +94,22 @@ def _browser_argv(name: str, url: str) -> list[str]:
     return [shutil.which(name) or name, url]
 
 
+def _runtime_path_prefix(name: str) -> str:
+    """PATH entry the browser's own INTERPRETER lives in.
+
+    An absolute path finds the entrypoint but not what it shells out to. carbonyl is a
+    bash script whose body is `"$(node "$0".js)" "$@"` — so resolving carbonyl and
+    stopping there yields `node: command not found`, exit 127, in a fresh pane that
+    never sourced nvm.
+
+    In every version-manager layout (nvm, asdf, pyenv) and in Homebrew, the interpreter
+    is a SIBLING of the entrypoint. So prepend that one directory rather than trying to
+    replicate a shell's init.
+    """
+    resolved = shutil.which(name)
+    return os.path.dirname(resolved) if resolved else ""
+
+
 def _keep_open(command: str) -> str:
     """Wrap so the pane SURVIVES the browser exiting, and shows why it exited.
 
@@ -264,7 +280,11 @@ def open_in_split(
             "kitty, iTerm2). Run inside one, or use a browser target."
         )
 
-    command = _keep_open(" ".join(shlex.quote(part) for part in _browser_argv(name, url)))
+    argv = " ".join(shlex.quote(part) for part in _browser_argv(name, url))
+    bindir = _runtime_path_prefix(name)
+    if bindir:
+        argv = f"PATH={shlex.quote(bindir)}:$PATH {argv}"
+    command = _keep_open(argv)
     ok, err = _SPLITTERS[host](command, (position or "right").strip().lower())
     if not ok:
         return False, f"{host} split failed: {err[:160]}"
