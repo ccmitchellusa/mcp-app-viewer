@@ -84,7 +84,7 @@ worse than one that shows nothing.
 | `system` | OS default browser. Always works; every other target falls back to it. |
 | `chrome`, `safari`, … | A named browser. **Chrome is worth choosing** — chrome-devtools tooling attaches to it, so an app opened there can be *inspected* programmatically, not just looked at. |
 | `iterm2` | Splits the current iTerm2 window and renders in a browser pane beside the session. |
-| `vscode` | VS Code's built-in Simple Browser, via `code --open-url`. |
+| `vscode` | **Not working yet** — VS Code has no CLI that opens Simple Browser. Falls back to a browser and says so. See below. |
 | `none` | Serve only, print the URL. Correct for headless or remote agents, where opening a browser either fails or opens it on the wrong machine. |
 
 ### iTerm2 setup (one time)
@@ -107,6 +107,29 @@ to a browser and says why.
 `position` picks the split axis. iTerm2 places a new pane to the right of a vertical
 split and below a horizontal one, so `left`/`top` select the same axis and say so
 rather than silently doing something else.
+
+### VS Code: why the target falls back
+
+VS Code exposes Simple Browser only as the `simpleBrowser.show` **command**, and
+commands cannot be invoked from the CLI. The obvious guess is a trap, measured on
+1.128.1:
+
+- `--open-url` is not in `code --help` at all
+- `code` exits **0** for a bogus URL *and* for a completely invented flag — so an
+  exit-code check reports success while opening nothing
+- worse, `code --open-url http://example.invalid/nonsense` pops up *"The extension
+  'example.invalid' cannot be installed because it was not found"* — it parses the
+  URL's host as a `publisher.name` extension id, so it takes an **active wrong
+  action**, invisibly, on every render
+
+The supported route is a small companion extension registering a URI handler that
+calls `simpleBrowser.show`, reachable as `vscode://ccmitchellusa.mcp-app-viewer/open?url=…`.
+Until that ships, the target detects the missing extension, says why, and falls back
+to a browser.
+
+This also means the Claude Code and Codex VS Code extensions do not change anything:
+they run the same CLI and the same hooks, so the hook still fires — only the display
+surface is unavailable, and only until the companion extension exists.
 
 ## Assets
 

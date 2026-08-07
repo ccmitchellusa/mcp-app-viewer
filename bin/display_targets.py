@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import webbrowser
+from urllib.parse import quote
 
 _MAC_APP_NAMES = {
     "chrome": "Google Chrome",
@@ -133,19 +134,59 @@ def _open_iterm2(url: str, position: str = "right") -> bool:
     return True
 
 
+# A companion VS Code extension would register a URI handler and call
+# `simpleBrowser.show`. Until one exists, the vscode target cannot work — see the
+# comment in _open_vscode.
+_VSCODE_HELPER_EXTENSION = "ccmitchellusa.mcp-app-viewer"
+
+
 def _open_vscode(url: str) -> bool:
-    """Show the app in VS Code's built-in Simple Browser, beside the editor."""
+    """Show the app in VS Code's built-in Simple Browser, beside the editor.
+
+    **VS Code has no CLI for this**, and the obvious guess is a trap. An earlier
+    version ran ``code --open-url <url>`` and returned True on exit 0. Measured on
+    1.128.1: ``--open-url`` is not in ``--help`` at all, and ``code`` exits **0** for
+    a bogus URL *and* for a completely invented flag. So the exit code carries no
+    signal, and that check reported success while opening nothing — the target
+    silently swallowed every render instead of falling back to a browser.
+
+    Worse than a no-op: ``code --open-url http://example.invalid/nonsense`` made VS
+    Code pop up "The extension 'example.invalid' cannot be installed because it was
+    not found" — it parses the URL's host as a ``publisher.name`` extension id. So the
+    old code took an active wrong action on every render, invisibly.
+
+    Simple Browser is reachable only through the ``simpleBrowser.show`` *command*,
+    and commands cannot be invoked from the CLI. The supported route is a small
+    companion extension registering a URI handler, which ``code --open-url
+    vscode://...`` can then reach. Until that extension exists, this target is
+    honestly unavailable: say so and fall back, rather than pretending.
+    """
     code = shutil.which("code") or shutil.which("code-insiders")
     if not code:
         _warn("vscode target needs the `code` CLI on PATH (Shell Command: Install 'code')")
         return False
-    # Newer VS Code exposes --open-url, which the built-in URI handler routes to
-    # Simple Browser for http(s). Older builds ignore it, so verify and fall back.
-    done = subprocess.run([code, "--open-url", url], capture_output=True, text=True)
-    if done.returncode == 0:
-        return True
-    _warn(f"`code --open-url` unsupported here ({done.stderr.strip()[:80]})")
-    return False
+
+    installed = subprocess.run(
+        [code, "--list-extensions"], capture_output=True, text=True
+    )
+    have_helper = _VSCODE_HELPER_EXTENSION in installed.stdout.split()
+    if not have_helper:
+        _warn(
+            "VS Code has no CLI that opens Simple Browser, and `code` exits 0 even for "
+            "invented flags, so success cannot be detected. Showing the app in a browser "
+            "instead. (A companion extension exposing a URI handler would fix this.)"
+        )
+        return False
+
+    # The helper's URI handler routes to simpleBrowser.show beside the editor.
+    handler_uri = f"vscode://{_VSCODE_HELPER_EXTENSION}/open?url={quote(url, safe='')}"
+    subprocess.run([code, "--open-url", handler_uri], capture_output=True, text=True)
+    # Still not verifiable from out here — the helper being installed is the only
+    # evidence available, and it is evidence about the mechanism rather than about an
+    # exit code that means nothing. UNVERIFIED: no such extension exists yet, so this
+    # branch has never run. Given --open-url was observed misparsing a plain URL, the
+    # vscode:// form needs a real test the day the helper ships.
+    return True
 
 
 def open_app(url: str, target: str | None, position: str = "right") -> str:
