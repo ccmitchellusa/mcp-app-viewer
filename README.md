@@ -134,6 +134,19 @@ otherwise: it installs a skill plus a shell profile, and the agent calls the vie
 directly. Its default target is `none`, since hermes usually runs somewhere that is
 not your desktop.
 
+## Known gap: one pane per render
+
+Every render opens a **new** pane or tab; it does not reuse the one already showing.
+Manually that is a minor annoyance. With auto-open on it is a pane fountain — one per
+tool result carrying an app.
+
+The naive fix (skip the open when a viewer is already running) trades it for a worse
+bug: the existing pane keeps showing the PREVIOUS app, because the HTML behind the URL
+changed and nothing told the page to reload. Looking at a stale app while believing it
+is the current one is exactly the failure this project exists to prevent. A real fix
+needs a version token the served shell polls, plus a per-profile "pane is open" marker
+— and even then the process cannot see whether you closed the pane, only infer it.
+
 ## What the hook will and will not do
 
 It fires on **every** tool call, so it is deliberately cheap and deliberately timid:
