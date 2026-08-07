@@ -84,7 +84,7 @@ worse than one that shows nothing.
 | `system` | OS default browser. Always works; every other target falls back to it. |
 | `chrome`, `safari`, … | A named browser. **Chrome is worth choosing** — chrome-devtools tooling attaches to it, so an app opened there can be *inspected* programmatically, not just looked at. |
 | `iterm2` | Splits the current iTerm2 window and renders in a browser pane beside the session. |
-| `vscode` | **Not working yet** — VS Code has no CLI that opens Simple Browser. Falls back to a browser and says so. See below. |
+| `vscode` | VS Code's built-in Simple Browser, beside the editor, via the bundled companion extension. Real four-way placement. |
 | `none` | Serve only, print the URL. Correct for headless or remote agents, where opening a browser either fails or opens it on the wrong machine. |
 
 ### iTerm2 setup (one time)
@@ -108,7 +108,7 @@ to a browser and says why.
 split and below a horizontal one, so `left`/`top` select the same axis and say so
 rather than silently doing something else.
 
-### VS Code: why the target falls back
+### VS Code: why it needs a companion extension
 
 VS Code exposes Simple Browser only as the `simpleBrowser.show` **command**, and
 commands cannot be invoked from the CLI. The obvious guess is a trap, measured on
@@ -119,17 +119,30 @@ commands cannot be invoked from the CLI. The obvious guess is a trap, measured o
   exit-code check reports success while opening nothing
 - worse, `code --open-url http://example.invalid/nonsense` pops up *"The extension
   'example.invalid' cannot be installed because it was not found"* — it parses the
-  URL's host as a `publisher.name` extension id, so it takes an **active wrong
-  action**, invisibly, on every render
+  URL's host as a `publisher.name` extension id, taking an **active wrong action**,
+  invisibly, on every render
 
-The supported route is a small companion extension registering a URI handler that
-calls `simpleBrowser.show`, reachable as `vscode://ccmitchellusa.mcp-app-viewer/open?url=…`.
-Until that ships, the target detects the missing extension, says why, and falls back
-to a browser.
+So `vscode-extension/` is the smallest possible bridge: ~80 lines of plain
+dependency-free JavaScript registering a URI handler that the CLI *can* reach, which
+calls the command only an extension can call. `install.sh` copies it into
+`~/.vscode/extensions/` when `code` is on PATH — no `.vsix`, no `vsce`, no npm.
+**Reload VS Code once after install** (`Developer: Reload Window`).
 
-This also means the Claude Code and Codex VS Code extensions do not change anything:
-they run the same CLI and the same hooks, so the hook still fires — only the display
-surface is unavailable, and only until the companion extension exists.
+It is also the one target with **real four-way placement**: VS Code has genuine editor
+groups, so unlike iTerm2, `left` and `top` mean what they say.
+
+**Security.** A URI handler is a real attack surface — any web page can navigate to a
+`vscode://` link, so a handler that opens whatever it is handed would let a hostile
+page render arbitrary content inside the editor, wearing the editor's chrome. This one
+accepts **http on loopback only**, by parsed hostname against an exact allow-list (a
+`startsWith('localhost')` check would pass `localhost.evil.com`), and it says why it
+refused rather than failing silently.
+
+**The Claude Code and Codex VS Code extensions change nothing here.** They run the same
+CLI and the same hooks, so the hook fires normally inside VS Code; only the display
+surface differs. Note also that the old "Debugger for Chrome" extension is deprecated in
+favour of `ms-vscode.js-debug` — irrelevant to this project, which uses the built-in
+Simple Browser and depends on neither.
 
 ## Assets
 

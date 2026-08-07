@@ -1,0 +1,21 @@
+{
+  "name": "mcp-app-viewer",
+  "displayName": "MCP App Viewer",
+  "description": "Opens a locally-served MCP App in VS Code's Simple Browser, beside your editor.",
+  "version": "0.1.0",
+  "publisher": "ccmitchellusa",
+  "private": true,
+  "license": "MIT",
+  "engines": { "vscode": "^1.74.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onUri"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mcpAppViewer.showLast",
+        "title": "MCP App Viewer: Show last app"
+      }
+    ]
+  }
+}

@@ -140,7 +140,7 @@ def _open_iterm2(url: str, position: str = "right") -> bool:
 _VSCODE_HELPER_EXTENSION = "ccmitchellusa.mcp-app-viewer"
 
 
-def _open_vscode(url: str) -> bool:
+def _open_vscode(url: str, position: str = "right") -> bool:
     """Show the app in VS Code's built-in Simple Browser, beside the editor.
 
     **VS Code has no CLI for this**, and the obvious guess is a trap. An earlier
@@ -156,10 +156,13 @@ def _open_vscode(url: str) -> bool:
     old code took an active wrong action on every render, invisibly.
 
     Simple Browser is reachable only through the ``simpleBrowser.show`` *command*,
-    and commands cannot be invoked from the CLI. The supported route is a small
-    companion extension registering a URI handler, which ``code --open-url
-    vscode://...`` can then reach. Until that extension exists, this target is
-    honestly unavailable: say so and fall back, rather than pretending.
+    and commands cannot be invoked from the CLI. So the supported route is the
+    companion extension in ``vscode-extension/`` — installed by ``install.sh`` — which
+    registers a URI handler ``code --open-url vscode://...`` CAN reach. Without it the
+    target is honestly unavailable: say so and fall back, rather than pretending.
+
+    Unlike iTerm2, VS Code has real editor-group placement, so ``position`` here means
+    what it says in all four directions.
     """
     code = shutil.which("code") or shutil.which("code-insiders")
     if not code:
@@ -179,7 +182,11 @@ def _open_vscode(url: str) -> bool:
         return False
 
     # The helper's URI handler routes to simpleBrowser.show beside the editor.
-    handler_uri = f"vscode://{_VSCODE_HELPER_EXTENSION}/open?url={quote(url, safe='')}"
+    pos = (position or "right").strip().lower()
+    handler_uri = (
+        f"vscode://{_VSCODE_HELPER_EXTENSION}/open"
+        f"?url={quote(url, safe='')}&position={quote(pos, safe='')}"
+    )
     subprocess.run([code, "--open-url", handler_uri], capture_output=True, text=True)
     # Still not verifiable from out here — the helper being installed is the only
     # evidence available, and it is evidence about the mechanism rather than about an
@@ -202,7 +209,7 @@ def open_app(url: str, target: str | None, position: str = "right") -> str:
             return "system (fallback)"
         return "none"
     if name in {"vscode", "code"}:
-        if _open_vscode(url):
+        if _open_vscode(url, position):
             return "vscode"
         if _open_system(url):
             return "system (fallback)"

@@ -61,6 +61,29 @@ sed "s|__MCP_APP_PROJECT_DIR__|$SCRIPT_DIR|g" "$SCRIPT_DIR/commands/mcp-app.md" 
   > "$CMD_DIR/mcp-app.md"
 ok "/mcp-app command installed"
 
+# -------------------------------------------------------- vscode extension ----
+# Optional and best-effort: only the `vscode` display target needs it, and a machine
+# without VS Code should not see an error for a target it will never use.
+#
+# Installed by COPY into the extensions dir rather than a .vsix. Packaging a vsix
+# needs `vsce`, which needs npm — and the whole point of writing this extension in
+# plain dependency-free JS was to not drag a node toolchain into a jq+python project.
+# VS Code discovers a plain folder here; verified with `code --list-extensions`.
+if command -v code >/dev/null 2>&1; then
+  EXT_DEST="$HOME/.vscode/extensions/ccmitchellusa.mcp-app-viewer-0.1.0"
+  mkdir -p "$EXT_DEST"
+  cp "$SCRIPT_DIR/vscode-extension/package.json" "$SCRIPT_DIR/vscode-extension/extension.js" "$EXT_DEST/"
+  if code --list-extensions 2>/dev/null | grep -qx "ccmitchellusa.mcp-app-viewer"; then
+    ok "VS Code extension installed (reload VS Code to activate: Developer: Reload Window)"
+  else
+    # Copied but not discovered — report it rather than claim success, since the
+    # vscode target checks exactly this listing before it will try.
+    printf '  \033[33m!!\033[0m VS Code extension copied but not listed; the vscode target will fall back\n'
+  fi
+else
+  ok "VS Code not found — skipping the companion extension (only the vscode target needs it)"
+fi
+
 # ------------------------------------------------------------------- bins ----
 sed -i.bak "s|__MCP_APP_PROJECT_DIR__|$SCRIPT_DIR|g" "$SCRIPT_DIR/bin/mcp-app.sh"
 rm -f "$SCRIPT_DIR/bin/mcp-app.sh.bak"
@@ -71,6 +94,7 @@ echo
 echo "Installed. Auto-open is OFF by default — turn it on when you want it:"
 echo "    /mcp-app on"
 echo "    /mcp-app target iterm2      # or chrome | vscode | system"
+echo "                                # vscode needs a VS Code reload after install"
 echo "    /mcp-app position right     # right | left | top | bottom"
 echo
 echo "Render one by hand any time:  /mcp-app open <file.html>"
