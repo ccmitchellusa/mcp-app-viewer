@@ -194,20 +194,26 @@ otherwise: it installs a skill plus a shell profile, and the agent calls the vie
 directly. Its default target is `none`, since hermes usually runs somewhere that is
 not your desktop.
 
-## Known gap: one pane per render
+## Known gap: one surface per render (browser and iTerm2 targets)
 
-Every render opens a **new** pane or tab; it does not reuse the one already showing.
-Manually that is a minor annoyance. With auto-open on it is a pane fountain — one per
-tool result carrying an app.
+For `system`, a named browser, and `iterm2`, every render opens a **new** tab or pane;
+it does not reuse the one already showing. By hand that is a minor annoyance. With
+auto-open on it is a pane fountain — one per tool result carrying an app.
 
 The naive fix (skip the open when a viewer is already running) trades it for a worse
-bug: the existing pane keeps showing the PREVIOUS app, because the HTML behind the URL
-changed and nothing told the page to reload. Looking at a stale app while believing it
-is the current one is exactly the failure this project exists to prevent. A real fix
-needs a version token the served shell polls, plus a per-profile "pane is open" marker
-— and even then the process cannot see whether you closed the pane, only infer it.
+bug: the existing surface keeps showing the PREVIOUS app, because the HTML behind the
+URL changed and nothing told the page to reload. Looking at a stale app while believing
+it is the current one is exactly the failure this project exists to prevent. A real fix
+needs a version token the served shell polls, plus a per-profile "surface is open"
+marker — and even then the process cannot see whether you closed it, only infer it.
 
 Designed but not built: [`docs/pane-reuse-design.md`](docs/pane-reuse-design.md).
+
+**`vscode` does not have this gap.** The companion extension remembers the editor group
+it created and reuses it, and Simple Browser re-navigates on each render — so the second
+app replaces the first *in place*. Verified: two consecutive renders updated one pane
+rather than opening two. That makes `vscode` the best-behaved target today, which is a
+fair reason to prefer it over `iterm2` if you work in an editor.
 
 ## What the hook will and will not do
 
