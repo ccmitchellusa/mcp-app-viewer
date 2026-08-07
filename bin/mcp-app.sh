@@ -267,7 +267,7 @@ PYEOF
         # NOTE: written as `if`, not `[ ... ] && echo`. A trailing &&-guard that
         # evaluates false makes it the branch's last status, so the whole script
         # exits 1 on a successful command — the exact bug this project's sibling
-        # (claude-code-piper-tts) shipped in ll-tts-voice.sh.
+        # (the Piper TTS integration) shipped in ll-tts-voice.sh.
         if [ "$1" = "iterm2" ]; then
           echo "  note: needs iTerm2 'browserProfiles' advanced setting + a profile named 'Browser' (restart iTerm2); otherwise it falls back to a browser"
         fi

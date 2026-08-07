@@ -7,8 +7,8 @@ Optionally it does this automatically: a PostToolUse hook watches tool results, 
 when one carries an MCP App it opens in a browser window, or in a pane beside your
 session.
 
-Sibling project to [claude-code-piper-tts](../claude-code-piper-tts); same shape, same
-per-agent install pattern.
+Sibling project to [the Piper TTS integration](../claude-code-piper-tts); same shape,
+same per-agent install pattern.
 
 ## Why this exists
 
@@ -96,6 +96,27 @@ trusting a target you have not personally seen render.
 | `terminal` | Splits **any** terminal (Ghostty, tmux, WezTerm, kitty, iTerm2) and renders in a terminal browser. The only target that works headless over SSH. Engine matters — see below. |
 | `none` | Serve only, print the URL. Correct for headless or remote agents, where opening a browser either fails or opens it on the wrong machine. |
 
+### If you are in Terminal.app, use one of two setups
+
+Terminal.app has no scriptable splitter, so there is no direct pane route. Two verified
+ways to use it:
+
+1. **`target system`** — the external browser. The recommended default.
+2. **`tmux`, then `target terminal`** — tmux supplies the splitter Terminal.app lacks and
+   carbonyl renders in the new pane. Verified in all four positions.
+
+**Do not use GNU screen for this.** It is the obvious alternative to tmux and it does not
+work: `COLORTERM=truecolor` is inherited straight through, so the browser emits 24-bit
+colour that screen's own `TERM` cannot carry, and the frame arrives as stripes. Worse,
+`detect_host()` reads `TMUX` but never `STY`, so screen is not detected at all and the
+viewer falls into the inline route without saying so. Measured on 4.00.03, the version
+macOS ships.
+
+With no multiplexer, `target terminal` still works — it renders in the window you are
+working in and holds it until you quit. That is the right answer over SSH on a headless
+box and the wrong default on a desktop. Details:
+[`docs/verification-matrix.md`](docs/verification-matrix.md).
+
 ### iTerm2 setup (one time)
 
 iTerm2 3.6 ships a built-in browser, but panes need **both** the `browserProfiles`
@@ -171,9 +192,9 @@ has no pane at any position. The extension's output channel (`View -> Output -> 
 Viewer`) says which command path ran, which is how that gets diagnosed rather than
 guessed at.
 
-**The Claude Code and Codex VS Code extensions change nothing here.** They run the same
-CLI and the same hooks, so the hook fires normally inside VS Code; only the display
-surface differs. Note also that the old "Debugger for Chrome" extension is deprecated in
+**Running an agent through its VS Code extension changes nothing here.** The extensions
+run the same CLI and the same hooks, so the hook fires normally inside VS Code; only the
+display surface differs. Note also that the old "Debugger for Chrome" extension is deprecated in
 favour of `ms-vscode.js-debug` — irrelevant to this project, which uses the built-in
 Simple Browser and depends on neither.
 
@@ -359,6 +380,6 @@ Deep-dive notes for the paths that needed one:
 
 ## Credits
 
-Structure and per-agent install pattern follow `claude-code-piper-tts`.
+Structure and per-agent install pattern follow the sibling Piper TTS project.
 MCP Apps: [SEP-1865](https://github.com/modelcontextprotocol/modelcontextprotocol),
 `ext-apps` extension.

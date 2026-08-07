@@ -36,7 +36,7 @@ measured at 0.4.4 but is no longer installed.
 | `terminal` | **VERIFIED** on both routes | Split route and inline route each confirmed visually. See the two tables below — this target's status is really five statuses. |
 | `vscode` | **VERIFIED** on VS Code 1.128.1, forks UNVERIFIED | Renders a Simple Browser pane in a real editor group (6acbb6b). Pane reuse verified: two consecutive renders updated one pane in place (68db12b). Fork discovery via `product.json` removes the guessing but **has never run against an actual fork**; a build that stripped Simple Browser would still show nothing. The installed VS Code has since moved to 1.132.0 — unverified on that build. |
 | `chrome`, `safari`, `firefox`, `edge`, `brave`, `arc` | **UNVERIFIED individually** | `_open_named` shells out to `open -a <app>`. Only the `system` default (Safari) has actually been watched to open. The others are the same three lines of code, but nobody has run them. |
-| `iterm2` | **NEVER WORKED HERE** | Requires the `browserProfiles` advanced setting *and* a profile named `Browser`. Checked on this machine: iTerm2 3.6.11 has no `Browser`/`Web`/`WebView` profile, so the target correctly refuses and falls back. The rendering path has therefore never executed. Do not confuse this with `terminal` + iTerm2 host, below — that is a different function and does work. |
+| `iterm2` | **VERIFIED** on iTerm2 3.6.11 | Renders in a browser pane beside the session. Verified in a separate iTerm2 session and confirmed by the maintainer; the one-time setup is done on this host (`browserProfiles` reads `1`). Do not confuse this with `terminal` + iTerm2 host, below — a different function, separately tracked. |
 
 ## Terminal hosts — the `terminal` target's split route
 
@@ -48,8 +48,42 @@ terminal deliberately, since inside tmux the visible panes are tmux's.
 | **tmux** | **VERIFIED — all four positions** (2026-08-07) | First execution of `_split_tmux` in the project's life. Pane geometry read back from `list-panes` and each position confirmed by screenshot of carbonyl rendering: right `left=61`, left `left=0` (shell pushed to 61), top `top=0` (shell at 15), bottom `top=15`. `-b` is honoured on 3.7b, so `left`/`top` genuinely place the pane *before* the current one. |
 | **Ghostty** | **VERIFIED** on 1.3.1 | First execution of `_split_ghostty` found three defects, each measured not inferred (62a5793): `focused terminal` is a property of a tab and the bare specifier raised `-1728`; splitting the *focused* pane made `position` drift, so right/bottom landed beside the shell but then left landed beside the bottom **browser** pane; `wait after command` is needed to hold a pane whose command never launches. Anchoring to a pane that reports a working directory fixes the drift. |
 | **iTerm2** | **PROBABLY WORKS — not visually confirmed** | `_split_iterm2` uses the *default* profile running a command, so unlike the `iterm2` target it needs no browser profile. A real run logged `displayed on terminal: carbonyl in an iterm2 pane (right, dark theme)`. That is the tool's own success message, which this project has caught lying before, and nobody has looked at the pane. Treat as unconfirmed until someone does. |
+| **GNU screen** | **VERIFIED BROKEN** on 4.00.03 | Not detected at all, and the render is unusable. See below — this is the reason for the Terminal.app recommendation. |
 | **WezTerm** | **UNVERIFIED** | Not installed. `_split_wezterm` has never executed. |
 | **kitty** | **UNVERIFIED** | Not installed. `_split_kitty` has never executed. It additionally needs `allow_remote_control yes`, which nobody has exercised. |
+
+### GNU screen mangles the render, and is not detected — measured
+
+macOS ships **screen 4.00.03 (2006)**. Running the `terminal` target inside it produced
+horizontal white stripes across the whole window with raw mouse-report escapes leaking
+into the buffer — not the app, and not recognisably anything. Screenshot taken; there is
+no ambiguity about it.
+
+Root cause, measured rather than guessed:
+
+| | outer Terminal.app | inside screen |
+|---|---|---|
+| `TERM` | `xterm-256color` | `screen` |
+| `COLORTERM` | `truecolor` | `truecolor` ← **inherited straight through** |
+| `STY` | unset | `40402.diag` |
+| `detect_host()` | `""` | `""` ← **screen is not detected** |
+
+`COLORTERM` is an ordinary environment variable, so it passes into screen untouched.
+carbonyl therefore believes it has 24-bit colour and emits it, while screen 4.00.03's
+own `TERM` cannot carry it — that version predates truecolor support entirely. The
+result is a mangled frame that looks like a broken app, which is the exact false
+negative this project exists to eliminate.
+
+Compounding it: `detect_host()` checks `TMUX` but never `STY`, so screen is invisible to
+it. With no host detected the tool takes the **inline** route and draws directly into the
+multiplexer that cannot render it. Worse, `GHOSTTY_RESOURCES_DIR` and friends are also
+inherited through screen, so under Ghostty it would try to split the *outer* terminal and
+put the browser in a pane behind the session.
+
+**Not fixed.** The obvious fix is small — detect `$STY`, refuse with a message naming the
+reason — but it was descoped in favour of the recommendation below. Anyone picking it up
+should note that screen 5.x does support truecolor and was **not** tested, so a blanket
+refusal would be conservative rather than precise.
 
 ## The `terminal` target's inline route (plain terminals)
 
@@ -87,21 +121,70 @@ app — a false negative, which is worse than showing nothing.
 
 ---
 
+## Terminal.app: use it two ways
+
+Terminal.app has **no scriptable splitter** of its own, so there is no direct pane route.
+That leaves two supported setups, both verified:
+
+**1. External system browser** — the recommended default.
+
+```
+mcp-app.sh target system
+```
+
+**2. tmux + carbonyl** — if you want the app beside your work, in the terminal.
+
+```
+tmux                          # then, inside it:
+mcp-app.sh target terminal
+mcp-app.sh position right     # or left / top / bottom, all verified
+```
+
+tmux supplies the splitter Terminal.app lacks, and carbonyl renders in the new pane.
+Verified in all four positions, geometry read back from `list-panes` and each confirmed
+by screenshot.
+
+### What not to do, and the third route
+
+- **Do not run GNU screen.** It is the obvious alternative to tmux and it does not work:
+  the frame comes out as stripes, and the tool does not even detect screen, so it fails
+  into the inline route silently. Measured above.
+- **The inline route works but is not the desktop answer.** With no multiplexer,
+  `target terminal` renders carbonyl in the window you are working in and holds it until
+  you quit. Verified working — truecolor, clean exit, shell restored — and it is the
+  **only** thing that works over SSH on a headless box, where opening a window is
+  impossible rather than merely inconvenient. Right tool there; wrong default here,
+  especially with auto-open on, where it would seize your terminal on a tool result.
+
+The recommendation is a maintainer decision rather than a measurement — it deliberately
+steers away from a path that does work — so it is recorded here rather than left
+implicit. It is also worth noting the inline route needed three defect fixes before it
+was safe at all: it reported a stale display target, opened a second browser alongside
+itself, and handed back a shell stuck in mouse-reporting mode.
+
 ## Working configurations
 
 Combinations watched end to end. Anything not listed may still work; nobody has looked.
 
-1. **Terminal.app, no multiplexer** — `target terminal`, carbonyl, inline. Takes over
-   the window; Ctrl-C returns a clean shell and exit 130. Truecolor.
-2. **tmux in Terminal.app** — `target terminal`, carbonyl, any of the four positions.
-   The split path; the shell returns to its prompt immediately.
-3. **Ghostty** — `target terminal`, carbonyl, split pane, all four directions.
-4. **VS Code 1.132.0 running the companion extension** — `target vscode`, real
+1. **Terminal.app** — `target system`. **The recommended setup**; see above.
+2. **Terminal.app, no multiplexer** — `target terminal`, carbonyl, inline. Verified
+   working: takes over the window, Ctrl-C returns a clean shell and exit 130, truecolor
+   confirmed 24-bit. Supported, and correct over SSH, but not the recommended desktop
+   default.
+3. **tmux in Terminal.app** — `target terminal`, carbonyl, any of the four positions.
+   The split path; the shell returns to its prompt immediately. The right choice if you
+   want the app beside your work in Terminal.app.
+4. **Ghostty** — `target terminal`, carbonyl, split pane, all four directions.
+5. **iTerm2** — `target iterm2`, browser pane beside the session (needs the one-time
+   `browserProfiles` setup).
+6. **VS Code 1.132.0 running the companion extension** — `target vscode`, real
    four-way editor-group placement, panes reused across renders. (Verified at 1.128.1.)
-5. **Anywhere, any OS** — `target system`. The universal fallback, and what every
+7. **Anywhere, any OS** — `target system`. The universal fallback, and what every
    other target degrades to.
-6. **Headless / remote agent** — `target none`, or `target terminal` over SSH. `none`
+8. **Headless / remote agent** — `target none`, or `target terminal` over SSH. `none`
    is correct when opening a browser would either fail or open it on the wrong machine.
+
+**Do not use:** GNU screen. Not detected, and the render is unusable — see above.
 
 ## Known limitations
 
@@ -128,6 +211,9 @@ Combinations watched end to end. Anything not listed may still work; nobody has 
 - **`inline_command` refuses only the `text` engine, not `stub`.** `open_in_split` got
   a `stub` guard when Chawan was reclassified; the inline path did not. `browser cha`
   would be launched inline and render an empty page. Unfixed.
+- **GNU screen is undetected and unusable.** `detect_host()` reads `TMUX` but never
+  `STY`, so the tool inlines into a multiplexer that mangles the frame. Unfixed by
+  decision; use tmux instead. Full measurement above.
 
 ### Untested paths — no evidence either way
 

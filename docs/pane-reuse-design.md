@@ -108,7 +108,7 @@ Slice 1 is the one that must land first, and is independently useful.
 
 ## What this does not address
 
-If two profiles (Claude Code and Codex, say) each hold a pane, they hold two — by
+If two agent profiles each hold a pane, they hold two — by
 design, since they run on different ports and have separate state. Consolidating them
 into one pane would mean a shared broker process and cross-agent state, which is a
 much larger change for a benefit nobody has asked for.
