@@ -110,12 +110,37 @@ open_app() { # <file|->
   [ -n "$tb" ]     && args+=(--terminal-browser "$tb")
   [ -n "$th" ]     && args+=(--theme "$th")
 
-  nohup "$PY" "$PROJECT_DIR/bin/mcp_app_server.py" "${args[@]}" >> "$LOG" 2>&1 &
+  # -u is load-bearing, not a nicety. Python BLOCK-buffers stdout when it is not a
+  # TTY, and this server runs until killed -- so every print() sat in a buffer that
+  # never flushed, and the log showed only the shell's own lines. That hid the one
+  # message that says whether the chosen display target worked or fell back.
+  nohup "$PY" -u "$PROJECT_DIR/bin/mcp_app_server.py" "${args[@]}" >> "$LOG" 2>&1 &
   echo $! > "$PIDFILE"
   sleep 0.5
   if _server_running; then
     echo "serving http://127.0.0.1:$MCP_APP_PORT/app/index.html"
     if [ -n "$base" ]; then echo "assets proxy: $base"; fi
+    # The viewer runs under nohup with stdout redirected to the log, so WHERE it
+    # displayed the app -- the one line that says whether your chosen target worked
+    # or silently fell back -- never reached the terminal. Surfacing it matters more
+    # than usual here: "displayed on system (fallback)" and "displayed on terminal"
+    # are the difference between a working target and a broken one, and both look
+    # identical when all you see is "serving".
+    local shown=""
+    # Up to ~5s. A browser target confirms almost instantly and pays none of it;
+    # a terminal split has to run osascript AND start Chromium, which measured ~3s
+    # -- and that is precisely the case where you most want to be told whether it
+    # worked, so waiting is the right trade.
+    for _ in $(seq 1 20); do
+      shown=$(grep -a "mcp-app-viewer: displayed on" "$LOG" 2>/dev/null | tail -1)
+      [ -n "$shown" ] && break
+      sleep 0.25
+    done
+    if [ -n "$shown" ]; then
+      echo "${shown#mcp-app-viewer: }"
+    else
+      echo "displayed on: (no confirmation yet — see '/mcp-app log')"
+    fi
     log "opened app ($(printf '%s' "$html" | wc -c | tr -d ' ') bytes)"
   else
     echo "viewer failed to start — see $LOG" >&2

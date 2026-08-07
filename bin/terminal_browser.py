@@ -398,7 +398,8 @@ def open_in_split(
     elif engine == "text":
         caveat = " (text-only: this is the FALLBACK, not the app)"
     theme_note = f", {resolved_theme} theme" if resolved_theme else ""
-    return True, f"{name} in a {host} pane ({position}{theme_note}){caveat}"
+    article = "an" if host[0] in "aeiou" else "a"
+    return True, f"{name} in {article} {host} pane ({position}{theme_note}){caveat}"
 
 
 if __name__ == "__main__":
