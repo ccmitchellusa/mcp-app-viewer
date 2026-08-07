@@ -164,6 +164,18 @@ def _split_tmux(command: str, position: str) -> tuple[bool, str]:
     return done.returncode == 0, done.stderr.strip()
 
 
+def _applescript_str(text: str) -> str:
+    """Quote a Python string as an AppleScript string literal.
+
+    Backslash MUST be escaped before the quote, or escaping `"` would itself introduce
+    backslashes that get re-escaped. This is not theoretical: the keep-open wrapper
+    contains `\\n`, and AppleScript expands `\\n` inside a literal into a real newline
+    — so the shell received a line break where printf expected the two characters, and
+    the wrapper broke on exactly the failure path it exists to report.
+    """
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _split_ghostty(command: str, position: str) -> tuple[bool, str]:
     """Ghostty splits via AppleScript, with the command set AT CREATION.
 
@@ -171,20 +183,59 @@ def _split_ghostty(command: str, position: str) -> tuple[bool, str]:
     into the new shell afterwards; `write text` races the shell's own startup, which
     mangled it into `llecho`. A surface configuration carrying `command` has no race —
     the pane is created already running the browser.
+
+    Three details come from Ghostty's dictionary rather than from guessing. `focused
+    terminal` is a property of a TAB, not of the application, so it needs its full
+    container path — bare `focused terminal` raises -1728. `wait after command` keeps
+    the pane alive even when the command never launches, which the shell wrapper cannot
+    do: if the wrapper itself fails to exec there is no shell left to hold the pane
+    open.
+
+    The third is the anchor. Splitting the FOCUSED pane is wrong here, because opening
+    a pane moves Ghostty's focus into it — so a second `open` splits the browser pane
+    we just made, and `position` starts measuring from the wrong pane. Observed
+    directly: right and bottom landed beside the shell, then left landed beside the
+    bottom BROWSER pane and top beside that one. A human never trips this (clicking
+    back to the shell to type restores focus) but the caller here is an agent, which
+    never touches focus at all — so for us it is the normal path, not the edge case.
+
+    Our own panes are distinguishable: Ghostty reports a `working directory` only for
+    surfaces running a shell with its integration loaded. A pane launched with an
+    explicit `command` — every pane this module creates — reports an empty string. So
+    anchor to the focused pane when it is a real shell, and otherwise to the first
+    shell in the tab, which is the pane the user is actually working in.
     """
     direction = {"right": "right", "left": "left", "bottom": "down", "top": "up"}.get(
         position, "right"
     )
-    escaped = command.replace('"', '\\"')
     script = f'''
     tell application "Ghostty"
+      set anchor to focused terminal of selected tab of front window
+      if (working directory of anchor) is "" then
+        repeat with t in terminals of selected tab of front window
+          if (working directory of t) is not "" then
+            set anchor to t
+            exit repeat
+          end if
+        end repeat
+      end if
       set cfg to new surface configuration
-      set command of cfg to "{escaped}"
-      split (focused terminal) direction {direction} with configuration cfg
+      set command of cfg to {_applescript_str(command)}
+      set wait after command of cfg to true
+      set pane to split anchor direction {direction} with configuration cfg
+      return id of pane
     end tell
     '''
     done = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    return done.returncode == 0, done.stderr.strip()
+    if done.returncode != 0:
+        return False, done.stderr.strip()
+    # A zero exit only means the script parsed and ran. Ghostty returns the new
+    # surface's id, so an empty result means no pane was actually created — report
+    # that as failure rather than claiming a split the user cannot see.
+    pane = done.stdout.strip()
+    if not pane:
+        return False, "Ghostty reported no new surface id; no pane was created"
+    return True, ""
 
 
 def _split_wezterm(command: str, position: str) -> tuple[bool, str]:
