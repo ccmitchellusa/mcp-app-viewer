@@ -19,6 +19,7 @@
 #   mcp-app.sh assets <dir|->   local dir serving the app's relative assets
 #   mcp-app.sh position <where> pane placement for split targets: right|left|top|bottom
 #   mcp-app.sh log              tail the activity log
+#   mcp-app.sh oauth login|status|token|logout|watch|setup   interactive OAuth login + client setup for MCP servers
 
 set -uo pipefail
 
@@ -26,8 +27,10 @@ set -uo pipefail
 # here, which worked exactly once: the substituted path was then COMMITTED, so the
 # placeholder no longer existed and a fresh clone on another machine silently kept
 # pointing at the author's home directory. Deriving it removes the failure mode
-# rather than documenting it.
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# rather than documenting it. Resolve symlinks first so PATH-level links work.
+_SELF="${BASH_SOURCE[0]}"
+while [ -L "$_SELF" ]; do _SELF="$(readlink "$_SELF")"; done
+PROJECT_DIR="$(cd "$(dirname "$_SELF")/.." && pwd)"
 CONFIG_DIR="${MCP_APP_CONFIG_DIR:-$HOME/.config/mcp-app-viewer}"
 CONFIG="$CONFIG_DIR/config.sh"
 
@@ -348,6 +351,24 @@ PYEOF
     ;;
   log)
     tail -n "${2:-30}" "$LOG" 2>/dev/null || echo "no log yet"
+    ;;
+  oauth)
+    # Interactive OAuth for agents whose MCP client cannot run the auth flow
+    # itself. The helper (bin/mcp_oauth_login.py) does auth-code + PKCE against
+    # an OIDC issuer, stores tokens under ~/.mcp-app-viewer (0600), and prints
+    # a bearer token for client config. --issuer/--client-id come from
+    # MCP_OAUTH_ISSUER / MCP_OAUTH_CLIENT_ID in config.sh when not passed.
+    shift
+    case "${1:-}" in
+      login|status|token|logout|watch|setup)
+        "$PY" "$PROJECT_DIR/bin/mcp_oauth_login.py" "$@"
+        ;;
+      ""|*)
+        echo "usage: mcp-app.sh oauth login|status|token|logout|watch [--issuer <url>] [--client-id <id>] [--flow auto|authcode|passcode] [--manual] [--margin <s>] [--once]" >&2
+        echo "       mcp-app.sh oauth setup [--client bob|hermes|generic] [--server <url>] [--workspace <dir>] [--issuer <url>]" >&2
+        exit 2
+        ;;
+    esac
     ;;
   status|*)
     echo "mcp-app-viewer"

@@ -22,3 +22,10 @@ export MCP_APP_ASSETS="${MCP_APP_ASSETS:-}"
 
 export MCP_APP_LOG="${MCP_APP_LOG:-/tmp/mcp-app-viewer.log}"
 export MCP_APP_PYTHON="${MCP_APP_PYTHON:-python3}"
+
+# Interactive OAuth login (`/mcp-app oauth ...`): the OIDC issuer and registered
+# public client id of the MCP server you log in to. For the IBM Cloud MCP server
+# these are the App ID oauthServerUrl and the MCP client application id (see
+# commands/mcp-app.md). Both are non-secret.
+export MCP_OAUTH_ISSUER="${MCP_OAUTH_ISSUER:-}"
+export MCP_OAUTH_CLIENT_ID="${MCP_OAUTH_CLIENT_ID:-}"
