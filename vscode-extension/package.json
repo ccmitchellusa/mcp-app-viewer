@@ -37,6 +37,10 @@
       {
         "command": "mcpAppViewer.showLast",
         "title": "MCP App Viewer: Show last app"
+      },
+      {
+        "command": "mcpAppViewer.closeAll",
+        "title": "MCP App Viewer: Close All Panes"
       }
     ]
   }

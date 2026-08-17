@@ -5,9 +5,22 @@
 // entire reason this extension exists: it is the smallest possible bridge from a URI
 // the CLI *can* trigger to a command only an extension can call.
 //
+// WHY WE NO LONGER USE SIMPLE BROWSER
+// -----------------------------------
+// Simple Browser is a SINGLETON. From its own shipped source:
+//
+//     show(url, options) { if (this._activeView) { this._activeView.show(...) } ... }
+//
+// One `_activeView`, reused. Ask it for a second app and it replaces the first — so
+// "a pane with Tokyo, a pane with Raleigh, a pane with New York" collapses into one
+// tab showing whichever rendered last, and nothing says the others were discarded.
+//
+// So this extension owns its panels: one webview per named SLOT, each holding an
+// iframe on that slot's viewer port. A slot is a stable identity, which is what makes
+// "put this one below the Reykjavik pane" expressible here as well as in iTerm2.
+//
 // Deliberately dependency-free plain JavaScript — no TypeScript, no bundler, no
-// node_modules. The parent project advertises zero third-party dependencies and this
-// should not be the thing that breaks that promise for ~80 lines.
+// node_modules. The parent project advertises zero third-party dependencies.
 
 const vscode = require('vscode')
 
@@ -34,6 +47,13 @@ function isLocalViewerUrl(raw) {
   return ALLOWED_HOSTS.has(parsed.hostname)
 }
 
+// A slot name becomes a panel title and a Map key, and arrives over a URI that any
+// page can trigger. Keep it boring.
+function safeSlot(raw) {
+  const name = (raw || 'main').trim()
+  return /^[A-Za-z0-9._-]{1,64}$/.test(name) ? name : 'main'
+}
+
 // ---------------------------------------------------------------- placement ---
 // VS Code has real editor-group placement, unlike iTerm2 (which only ever puts a new
 // pane right or below). So `left` and `top` mean what they say here.
@@ -49,42 +69,90 @@ const GROUP_COMMAND = {
   bottom: 'workbench.action.newGroupBelow',
 }
 
-// Remember the column we made. Creating a group per render would fan out into a
-// column farm after a few tool calls — the same one-surface-per-render bug the
-// parent project documents for panes.
-let appColumn = null
+/** slot name -> WebviewPanel. The registry that makes panes addressable. */
+const panels = new Map()
 
-function columnStillOpen(column) {
-  if (column === null) return false
-  return vscode.window.tabGroups.all.some((g) => g.viewColumn === column)
+function paneHtml(url) {
+  // The app runs in an iframe on its own loopback origin, exactly as Simple Browser
+  // does it. `allow-same-origin` is load-bearing and not a loosening: the viewer's
+  // host shell and the app it embeds must be same-origin to postMessage each other,
+  // and without it the app would sit on its empty state forever.
+  const src = String(url).replace(/"/g, '&quot;')
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src http://127.0.0.1:* http://localhost:*; style-src 'unsafe-inline';">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--vscode-editor-background); }
+  iframe { border: 0; display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body><iframe src="${src}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe></body>
+</html>`
 }
 
-async function openInSimpleBrowser(url, position, log) {
+async function columnFor(position, near, log) {
+  // Anchored: focus the pane we are placing relative to, so the new group is created
+  // beside THAT one rather than beside whatever the user last clicked. Same reasoning
+  // as the iTerm2 side, where an unanchored split follows the frontmost window.
+  const anchor = near && panels.get(near)
+  if (anchor) {
+    anchor.reveal(anchor.viewColumn, false)
+    log(`anchored to pane '${near}' in column ${anchor.viewColumn}`)
+  }
+  const command = GROUP_COMMAND[position] || GROUP_COMMAND.right
+  await vscode.commands.executeCommand(command)
+  return vscode.window.tabGroups.activeTabGroup.viewColumn
+}
+
+async function openPane(url, slot, position, near, log) {
   const pos = (position || 'right').toLowerCase()
 
-  if (!columnStillOpen(appColumn)) {
-    const groupCommand = GROUP_COMMAND[pos] || GROUP_COMMAND.right
-    await vscode.commands.executeCommand(groupCommand)
-    appColumn = vscode.window.tabGroups.activeTabGroup.viewColumn
-    log(`created editor group ${pos} -> column ${appColumn}`)
-  } else {
-    log(`reusing column ${appColumn}`)
+  const existing = panels.get(slot)
+  if (existing) {
+    // The slot's URL never changes while it lives, and the page polls /version and
+    // reloads itself when the render behind it changes. So revealing is enough —
+    // and rebuilding the webview would throw away the app's state for nothing.
+    existing.webview.html = paneHtml(url)
+    existing.reveal(existing.viewColumn, true)
+    log(`reused pane '${slot}' in column ${existing.viewColumn}`)
+    return
   }
 
-  // `simpleBrowser.api.open` takes placement options; `simpleBrowser.show` does not.
-  // Prefer the former; the fallback still renders the app but lands wherever focus is,
-  // so log which path ran — "it opened in the wrong place" and "the api command is
-  // missing" look identical from the outside otherwise.
-  try {
-    await vscode.commands.executeCommand('simpleBrowser.api.open', vscode.Uri.parse(url), {
-      viewColumn: appColumn,
-      preserveFocus: true,
-    })
-    log('opened via simpleBrowser.api.open')
-  } catch (err) {
-    log(`simpleBrowser.api.open failed (${err && err.message}); falling back to simpleBrowser.show`)
-    await vscode.commands.executeCommand('simpleBrowser.show', url)
+  const column = await columnFor(pos, near, log)
+  const panel = vscode.window.createWebviewPanel(
+    'mcpAppViewer.pane',
+    slot === 'main' ? 'MCP App' : `MCP App: ${slot}`,
+    { viewColumn: column, preserveFocus: true },
+    { enableScripts: true, retainContextWhenHidden: true }
+  )
+  panel.webview.html = paneHtml(url)
+  // Closing a pane by hand must actually forget it, or the next render would "reuse"
+  // a disposed panel and throw where the user expected a window.
+  panel.onDidDispose(() => {
+    if (panels.get(slot) === panel) panels.delete(slot)
+    log(`pane '${slot}' closed`)
+  })
+  panels.set(slot, panel)
+  log(`created pane '${slot}' ${pos} -> column ${column}`)
+}
+
+function closePanes(slot, log) {
+  if (slot === '--all' || slot === 'all') {
+    const n = panels.size
+    for (const panel of Array.from(panels.values())) panel.dispose()
+    panels.clear()
+    log(`closed ${n} pane(s)`)
+    return
   }
+  const panel = panels.get(slot)
+  if (!panel) {
+    log(`no pane named '${slot}' to close`)
+    return
+  }
+  panel.dispose()
+  panels.delete(slot)
 }
 
 // ------------------------------------------------------------------ wiring ---
@@ -103,8 +171,15 @@ function activate(context) {
     output,
     vscode.window.registerUriHandler({
       handleUri(uri) {
-        // vscode://ccmitchellusa.mcp-app-viewer/open?url=<encoded>&position=right
+        // vscode://ccmitchellusa.mcp-app-viewer/open?url=<enc>&position=right&slot=tokyo&near=reykjavik
+        // vscode://ccmitchellusa.mcp-app-viewer/close?slot=tokyo   (or slot=--all)
         const params = new URLSearchParams(uri.query)
+
+        if (uri.path === '/close') {
+          closePanes(params.get('slot') === '--all' ? '--all' : safeSlot(params.get('slot')), log)
+          return
+        }
+
         const url = params.get('url')
         if (!url) {
           vscode.window.showErrorMessage('MCP App Viewer: no url in the request.')
@@ -120,8 +195,10 @@ function activate(context) {
           return
         }
         lastUrl = url
-        log(`handling ${url} position=${params.get('position') || 'right'}`)
-        openInSimpleBrowser(url, params.get('position'), log)
+        const slot = safeSlot(params.get('slot'))
+        const near = params.get('near') ? safeSlot(params.get('near')) : null
+        log(`handling ${url} slot=${slot} position=${params.get('position') || 'right'} near=${near || '-'}`)
+        openPane(url, slot, params.get('position'), near, log)
       },
     }),
 
@@ -132,8 +209,10 @@ function activate(context) {
         )
         return
       }
-      openInSimpleBrowser(lastUrl, 'right', log)
-    })
+      openPane(lastUrl, 'main', 'right', null, log)
+    }),
+
+    vscode.commands.registerCommand('mcpAppViewer.closeAll', () => closePanes('--all', log))
   )
 }
 

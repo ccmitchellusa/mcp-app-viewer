@@ -1,6 +1,6 @@
 ---
 description: Render MCP Apps (ui:// resources) in a real browser, control the auto-open hook, and log in to OAuth-protected MCP servers
-argument-hint: "[on|off] | open <file> | last | target <system|chrome|safari|firefox|iterm2|vscode|none> | position <right|left|top|bottom> | base <url> | assets <dir> | oauth <login|status|token|logout|watch|setup> | stop | log"
+argument-hint: "[on|off] | open <file> [data.json] | last | events [n|clear] | target <system|chrome|safari|firefox|iterm2|vscode|none> | position <right|left|top|bottom> | base <url> | assets <dir> | oauth <login|status|token|logout|watch|setup> | stop | log"
 allowed-tools: Bash(bash __MCP_APP_PROJECT_DIR__/bin/mcp-app.sh:*)
 ---
 
@@ -27,6 +27,14 @@ Present the result above concisely.
   local directory instead. Use `assets` when the origin needs auth — a proxied fetch
   against an authenticated host returns 403, and the viewer reports that rather than
   serving an empty file.
+- `events` is the APP talking back: what the user did in the rendered app
+  (`ui/update-model-context` when they move a map, `tools/call` when they ask the app
+  to run something). Read them as facts about what the user did, then ACT — if a map
+  event shows a new location, that is a request to look at that location. Nothing
+  pushes these to you, so check `events` when the user refers to something they did
+  in the app. A `tools/call` entry is a tool the user wanted RUN: run it yourself.
+  Run `/mcp-app events clear` once you have acted, so the same action is not
+  rediscovered and repeated in a later session.
 - If a URL is printed, give it to the user plainly; the viewer keeps serving until
   `/mcp-app stop`.
 

@@ -33,6 +33,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
 import webbrowser
 from urllib.parse import quote
 
@@ -74,6 +75,16 @@ def _open_named(url: str, name: str) -> bool:
         return False
 
 
+# Our own browser profile, written as a DYNAMIC PROFILE. iTerm2 watches this
+# directory and loads changes live — no restart, and the user's own profiles are
+# never touched.
+_ITERM2_PROFILE_DIR = (
+    pathlib.Path.home() / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles"
+)
+_ITERM2_PROFILE_FILE = _ITERM2_PROFILE_DIR / "mcp-app-viewer.json"
+_ITERM2_PROFILE_NAME = "MCP App Viewer"
+
+
 def _iterm2_browser_readiness() -> tuple[bool, str]:
     """Can iTerm2 render a web view in a pane? Returns (ready, why-not).
 
@@ -85,9 +96,10 @@ def _iterm2_browser_readiness() -> tuple[bool, str]:
     the user's setup. The conclusion happened to be right here, for the wrong
     reason, which is the worst way to be right.
 
-    Two prerequisites, and naming which one is missing is the point: enabling the
-    advanced setting and creating the profile are different five-minute tasks, and
-    being told to do the one you already did is worse than being told nothing.
+    ONE prerequisite now, not two. This used to also demand a hand-made profile
+    called "Browser"; we ship our own as a dynamic profile instead, which is both
+    less setup and more reliable — a profile we write is a profile we know carries
+    the initial URL.
     """
     export = subprocess.run(
         ["defaults", "export", "com.googlecode.iterm2", "-"],
@@ -107,17 +119,52 @@ def _iterm2_browser_readiness() -> tuple[bool, str]:
             "iTerm2's browser panes are off. Settings > Advanced > search "
             "'browserProfiles' > on, then restart iTerm2."
         )
-    names = {(b.get("Name") or "").strip().lower() for b in prefs.get("New Bookmarks", [])}
-    if not (names & {"browser", "web", "webview"}):
-        return False, (
-            "iTerm2 has browser panes enabled but no profile to render in. Settings > "
-            "Profiles > + > name it 'Browser', then restart iTerm2. "
-            f"(profiles found: {', '.join(sorted(n for n in names if n)) or 'none'})"
-        )
     return True, ""
 
 
-def _open_iterm2(url: str, position: str = "right") -> bool:
+def _write_iterm2_profile(url: str, name: str, path: pathlib.Path) -> tuple[bool, bool]:
+    """Point our dynamic browser profile at ``url``. Returns (ok, changed).
+
+    THE ONLY WAY TO AIM AN ITERM2 BROWSER PANE. Verified against iTerm2 3.6.11 by
+    pointing each candidate at a logging HTTP server and checking for a request:
+
+      * `set URL of session` — the session class has no URL property. Fails -10003.
+      * `split ... command "<url>"` — `command` is a SHELL command. iTerm2 ran the
+        URL as one, it failed, and `Close Sessions On End` shut the pane before the
+        error could be read. No request, and a red flash the user cannot catch.
+      * `open -a iTerm "<url>"` — no request.
+      * the Python API's `load_url` — real, but needs the API server enabled AND the
+        `iterm2` package installed. Too much setup to require.
+
+    A dynamic profile carrying `Initial URL` works, needs no restart, and asks the
+    user for nothing beyond the advanced setting they already had to enable.
+    """
+    payload = {
+        "Profiles": [
+            {
+                "Name": name,
+                "Guid": f"mcp-app-viewer-{name}",
+                # What marks a profile as browser-mode rather than a shell.
+                "Custom Command": "Browser",
+                "Initial URL": url,
+                "Close Sessions On End": False,
+            }
+        ]
+    }
+    text = json.dumps(payload, indent=2) + "\n"
+    try:
+        if path.exists() and path.read_text("utf-8") == text:
+            return True, False  # already correct — no write, and no wait needed
+        _ITERM2_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return True, True
+    except OSError as exc:
+        _warn(f"could not write the iTerm2 dynamic profile: {exc}")
+        return False, False
+
+
+def _open_iterm2(url: str, position: str = "right", pane_profile: str | None = None,
+                 anchor: str | None = None) -> bool:
     """Show the app in an iTerm2 pane beside the session.
 
     iTerm2 3.6 ships a built-in browser, but browser panes require the
@@ -145,23 +192,69 @@ def _open_iterm2(url: str, position: str = "right") -> bool:
         _warn(f"{why_not} Using a browser instead.")
         return False
 
+    profile_name = pane_profile or _ITERM2_PROFILE_NAME
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in profile_name)
+    ok, changed = _write_iterm2_profile(url, profile_name, _ITERM2_PROFILE_DIR / f"{safe}.json")
+    if not ok:
+        return False
+    if changed:
+        # iTerm2 watches the directory; the reload is not instantaneous. Splitting
+        # before it lands opens the pane on the PREVIOUS url, which looks like a
+        # stale render rather than a race.
+        time.sleep(1.2)
+
     pos = (position or "right").strip().lower()
     axis = "horizontally" if pos in {"top", "bottom"} else "vertically"
     if pos in {"left", "top"}:
         _warn(f"iTerm2 opens new panes right/below; showing the app on the {axis[:-2]} side")
 
-    script = f'''
-    tell application "iTerm2"
+    # WHERE to split from. Without an anchor iTerm2 splits the current session — and
+    # "current" MOVES: creating a pane focuses it, so the next unanchored render
+    # would split the pane we just made, marching across the window. An anchor is a
+    # session id captured when a pane was created, so a slot can be updated or
+    # placed relative to a specific pane no matter where focus has wandered.
+    if anchor:
+        locate = f'''
+      set found to missing value
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if (id of s) is "{anchor}" then set found to s
+          end repeat
+        end repeat
+      end repeat
+      if found is missing value then error "anchor pane is gone"
+      tell found
+        set p to (split {axis} with profile "{profile_name}")
+      end tell'''
+    else:
+        locate = f'''
       tell current session of current window
-        set p to (split {axis} with profile "Browser")
-        tell p to set URL to "{url}"
-      end tell
+        set p to (split {axis} with profile "{profile_name}")
+      end tell'''
+
+    script = f'''
+    tell application "iTerm2"{locate}
+      return id of p
     end tell
     '''
     done = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     if done.returncode != 0:
-        _warn(f"iTerm2 browser pane failed: {done.stderr.strip()[:140]}")
+        err = done.stderr.strip()[:140]
+        if anchor and "anchor pane is gone" in err:
+            # The pane this slot used to live in was closed. Retry unanchored rather
+            # than refusing: the user asked to see an app, not to see an error about
+            # a pane they closed themselves.
+            _warn("the anchor pane was closed; opening a new pane instead")
+            return _open_iterm2(url, position, pane_profile, anchor=None)
+        _warn(f"iTerm2 browser pane failed: {err}")
         return False
+    # How the caller learns which pane this slot now owns. The server is detached,
+    # so stdout is the log and mcp-app.sh scrapes this line — the same channel that
+    # already carries "displayed on".
+    sid = done.stdout.strip()
+    if sid:
+        print(f"mcp-app-viewer: pane session {sid}")
     return True
 
 
@@ -357,7 +450,8 @@ def editor_profile() -> dict:
 _VSCODE_HELPER_EXTENSION = "ccmitchellusa.mcp-app-viewer"
 
 
-def _open_vscode(url: str, position: str = "right") -> bool:
+def _open_vscode(url: str, position: str = "right", pane_slot: str | None = None,
+                 pane_near: str | None = None) -> bool:
     """Show the app in the editor's built-in Simple Browser, beside your work.
 
     **The editor has no CLI for this**, and the obvious guess is a trap. An earlier
@@ -402,9 +496,14 @@ def _open_vscode(url: str, position: str = "right") -> bool:
         return False
 
     pos = (position or "right").strip().lower()
+    # slot/near are what make panes addressable in the editor, the same way a session
+    # id does in iTerm2. The extension keys its own webview panels by slot, because
+    # Simple Browser is a singleton and would collapse every slot into one tab.
     handler_uri = (
         f"{profile['url_protocol']}://{_VSCODE_HELPER_EXTENSION}/open"
         f"?url={quote(url, safe='')}&position={quote(pos, safe='')}"
+        f"&slot={quote(pane_slot or 'main', safe='')}"
+        + (f"&near={quote(pane_near, safe='')}" if pane_near else "")
     )
     subprocess.run([cli, "--open-url", handler_uri], capture_output=True, text=True)
     # VERIFIED end to end on VS Code 1.128.1 (2026-08-07): renders a Simple Browser
@@ -424,6 +523,10 @@ def open_app(
     allow_text: bool = False,
     theme: str | None = None,
     fallback: bool = True,
+    pane_profile: str | None = None,
+    anchor: str | None = None,
+    pane_slot: str | None = None,
+    pane_near: str | None = None,
 ) -> str:
     """Open ``url`` on ``target``; returns the target actually used.
 
@@ -465,8 +568,13 @@ def open_app(
         _warn(message)
         return _degrade()
 
+    if name in {"vscode", "code", "editor"}:
+        if _open_vscode(url, position, pane_slot, pane_near):
+            return "vscode"
+        return _degrade()
+
     if name in {"iterm2", "iterm"}:
-        if _open_iterm2(url, position):
+        if _open_iterm2(url, position, pane_profile, anchor):
             return "iterm2"
         return _degrade()
     if name in {"vscode", "code"}:
@@ -491,3 +599,20 @@ if __name__ == "__main__":
         print(json.dumps(editor_profile(), indent=2))
     else:
         print(__doc__)
+
+
+def close_vscode_pane(slot: str) -> bool:
+    """Ask the editor to dispose a pane (or all of them, with "--all").
+
+    Lives here because editor discovery does: which CLI, which URL scheme, and
+    whether the companion extension is present are all answered in one place.
+    """
+    profile = editor_profile()
+    if not profile["found"]:
+        return False
+    uri = (
+        f"{profile['url_protocol']}://{_VSCODE_HELPER_EXTENSION}/close"
+        f"?slot={quote(slot, safe='')}"
+    )
+    subprocess.run([profile["cli"], "--open-url", uri], capture_output=True, text=True)
+    return True

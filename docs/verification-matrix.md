@@ -18,8 +18,12 @@ terminal's actual bytes, and wrote down what they saw.
 ## Environment the measurements were taken on
 
 macOS 26.6 (25G5065a) · Terminal.app 2.15 (470.2) · Ghostty 1.3.1 · iTerm2 3.6.11 ·
-tmux 3.7b · VS Code 1.132.0 (verification was against **1.128.1**) ·
+tmux 3.7b · VS Code 1.132.0 (df53daa, x64) ·
 carbonyl 0.0.2 · node v24.11.0 · Python 3.14.2
+
+Not installed on this machine, so untestable here: **WezTerm**, **kitty**, **browsh**,
+every text browser — and **every VS Code fork**. `code` is the only editor CLI present;
+`codium`, `cursor`, `windsurf` and `bob` are all absent from `PATH`.
 
 Not installed on this machine, so untestable here: **WezTerm**, **kitty**, **browsh**,
 and every text browser (`w3m`, `lynx`, `links2`, `links`, `elinks`). Chawan was
@@ -34,9 +38,25 @@ measured at 0.4.4 but is no longer installed.
 | `system` | **VERIFIED** | Opens the OS default browser. Exercised repeatedly, most recently as the hook's non-tty fallback: reported `displayed on system (fallback)` and one Safari tab appeared on `127.0.0.1:8777`. |
 | `none` | **VERIFIED** | Serves and reports `displayed on none`; no browser process appeared, no `--no-fallback` on argv. |
 | `terminal` | **VERIFIED** on both routes | Split route and inline route each confirmed visually. See the two tables below — this target's status is really five statuses. |
-| `vscode` | **VERIFIED** on VS Code 1.128.1, forks UNVERIFIED | Renders a Simple Browser pane in a real editor group (6acbb6b). Pane reuse verified: two consecutive renders updated one pane in place (68db12b). Fork discovery via `product.json` removes the guessing but **has never run against an actual fork**; a build that stripped Simple Browser would still show nothing. The installed VS Code has since moved to 1.132.0 — unverified on that build. |
+| `vscode` | **VERIFIED** on VS Code 1.132.0 (2026-08-07) for the OWN-WEBVIEW route | The extension no longer delegates to Simple Browser (a singleton reusing one `_activeView`); it creates a `createWebviewPanel` per slot. That route has now been executed and watched. One render put a tab titled **`MCP App`** — not `Simple Browser` — into a new editor group to the right, and the app inside it drew a live Leaflet map reading **`Raleigh, NC — 35.77960, -78.63820`**. Reading the payload's own label off the screen is what makes this a measurement and not a pane sighting: the empty state says `Waiting for a location…`, so the label can only appear if the data arrived. Fork discovery via `product.json` still **has never run against an actual fork** — see the fork row below. |
+| `vscode` — the iframe CSP/sandbox (the riskiest claim) | **VERIFIED** | Both halves held under `default-src 'none'; frame-src http://127.0.0.1:* http://localhost:*` with `sandbox="allow-scripts allow-same-origin allow-forms allow-popups"`. `frame-src` admitted the iframe: the page loaded and began polling, and `mcp-app.sh panes` flipped the slot to `live` (liveness *is* the heartbeat the page writes by polling `/version`, so `live` cannot be produced by a blank pane). `allow-same-origin` carried the postMessage handoff: the host shell reached `frame.contentWindow`, delivered the tool result, and the app rendered it. No CSP errors needed hunting in the webview devtools — the rendered label settled it. Leaflet's CDN stylesheet and the OSM tiles also loaded, confirming the outer webview CSP does not constrain the framed document, which is served from the loopback origin with its own headers. |
 | `chrome`, `safari`, `firefox`, `edge`, `brave`, `arc` | **UNVERIFIED individually** | `_open_named` shells out to `open -a <app>`. Only the `system` default (Safari) has actually been watched to open. The others are the same three lines of code, but nobody has run them. |
-| `iterm2` | **NOT VERIFIED — cannot work on this host** | Needs BOTH the `browserProfiles` advanced setting AND a profile named `Browser`. This host has the setting (`browserProfiles` = 1) but only a `Default` profile, so every attempt falls back to a browser. Previously marked VERIFIED here on the strength of `browserProfiles` reading 1 — that is one of two prerequisites, and the maintainer's confirmation was of the VS Code pane and of carbonyl in an iTerm2 *split* (`terminal` host), not of this target. Do not confuse the two. |
+| `iterm2` | **VERIFIED** on 3.6.11 (2026-08-07) | Renders in a real browser pane (`profile=MCP App Viewer`, `tty=missing value` — a web view, not a shell). The previous verdict here was wrong in its *reason*: the host had both prerequisites all along, and the target failed because the code called AppleScript that does not exist. Each candidate was measured by pointing it at a logging HTTP server and counting requests: `set URL of session` → `-10003`, the `session` class has no URL property; `split … command "<url>"` → **0 requests**, `command` is a SHELL command, so iTerm2 ran the URL as one, it failed, and `Close Sessions On End` shut the pane before the error could be read (this was the "red error that closed too fast"); `open -a iTerm <url>` → **0 requests**. A **dynamic profile carrying `Initial URL`** → **1 request**. That is the mechanism now used; it loads live, needs no restart, and no longer requires a hand-made `Browser` profile — only the `browserProfiles` advanced setting. |
+
+## Named panes (slots)
+
+Several apps on screen at once, each with its own server, port and identity.
+
+| claim | status | evidence |
+|---|---|---|
+| Three simultaneous panes, each its own app | **VERIFIED** (iTerm2, 2026-08-07) | `tokyo` 8778 → "Tokyo", `reykjavik` 8779 → "Reykjavik", `nyc` 8780 → "New York City"; all three `live` in `mcp-app.sh panes`, each URL serving its own payload. |
+| Placement relative to a named pane (`--near X --position below`) | **VERIFIED** (iTerm2) | `split` returns the new session and `id of p` yields a stable UUID; selecting a session by that id and splitting from it both confirmed. Tokyo placed below Reykjavik, NYC below Tokyo. |
+| Panes land beside the AGENT, not the frontmost window | **VERIFIED by failure, then fixed** | Reported from use: after switching to another full-screen iTerm2 window, the next render opened there. Unanchored splits target `current session of current window`. New panes now anchor to `ITERM_SESSION_ID`. |
+| Pane REUSE instead of a new pane per render | **VERIFIED** | Two consecutive automatic renders held the pane count at 2 and reported `reused the open pane`. An already-open page followed a render with no navigation: `Raleigh, NC` → `Reykjavik` at the same URL (headless Chromium). Liveness is the heartbeat's age, so a closed pane self-corrects. |
+| Named panes in VS Code | **VERIFIED** (VS Code 1.132.0, 2026-08-07) | Four webview panes on screen at once, each its own server, port and app: `main` 8777 → "Raleigh, NC", `tokyo` 8778 → "Tokyo", `reykjavik` 8779 → "Reykjavik", `nyc` 8780 → "New York City". All four `live` in `mcp-app.sh panes`, all four maps drawn simultaneously with their own labels, tabs titled `MCP App`, `MCP App: tokyo`, `MCP App: reykjavik`, `MCP App: nyc`. Four distinct labels on screen together is the direct refutation of the singleton collapse this route was written to fix. Confirmed independently by the maintainer watching it happen ("four different panes opened"). |
+| Placement in VS Code (`--near X --position below`) | **VERIFIED** | `tokyo` landed right of `main`; `reykjavik` below `tokyo`; `nyc` below `reykjavik` — the requested geometry, read off a screenshot. The anchoring is the extension's own: `columnFor` reveals the named pane first, so `newGroupBelow` splits *that* group rather than wherever focus had drifted. Note this worked **despite** `mcp-app.sh` printing `no pane named 'tokyo' to place this beside` on every `--near` — see the defect below. |
+| Pane REUSE in VS Code | **VERIFIED** | Re-rendering slot `tokyo` with a different payload left the pane count at four and the tab still titled `MCP App: tokyo`, with its map now showing **Paris**. Updated in place; no fifth pane. |
+| `close --all` in VS Code | **VERIFIED** | Reported `closed 4 pane(s)`; all four editor groups disappeared from the window (screenshot), and the listening viewer ports went from four to **zero**, so the servers were reaped and not merely orphaned behind a closed pane. |
 
 ## Terminal hosts — the `terminal` target's split route
 
@@ -177,8 +197,20 @@ Combinations watched end to end. Anything not listed may still work; nobody has 
 4. **Ghostty** — `target terminal`, carbonyl, split pane, all four directions.
 5. **iTerm2** — `target iterm2`, browser pane beside the session (needs the one-time
    `browserProfiles` setup).
-6. **VS Code 1.132.0 running the companion extension** — `target vscode`, real
-   four-way editor-group placement, panes reused across renders. (Verified at 1.128.1.)
+6. **VS Code 1.132.0 running the companion extension** — `target vscode`, several named
+   webview panes at once, placement relative to a named pane, reuse across renders, and
+   `close --all`. Verified at 1.132.0 on 2026-08-07.
+
+   **On the reload `install.sh` tells you to do:** this run never reloaded the window,
+   and the new extension still took effect. That is not a reason to skip it. The
+   extension declares `activationEvents: ["onUri"]`, so it is `require`d from disk at
+   the *first* URI — if it has not been activated yet in that window, the first render
+   after an install picks up the new file for free. If it *has* already been activated,
+   the old module stays resident and a reload is genuinely required, with no symptom
+   beyond behaving like the previous version. Reload unless you know the window has
+   never rendered an app. Note also that the URI goes to the **last active window**, not
+   a window of your choosing: with several windows open, the panes appear wherever focus
+   last was.
 7. **Anywhere, any OS** — `target system`. The universal fallback, and what every
    other target degrades to.
 8. **Headless / remote agent** — `target none`, or `target terminal` over SSH. `none`
@@ -190,9 +222,12 @@ Combinations watched end to end. Anything not listed may still work; nobody has 
 
 ### Measured — these are real and understood
 
-- **`iterm2` target needs manual one-time setup** and cannot self-configure: the
-  `browserProfiles` advanced setting and a `Browser` profile are neither on by default
-  nor creatable from AppleScript. Until they exist the target falls back and says why.
+- **`iterm2` target needs one manual setting** and cannot self-configure it: the
+  `browserProfiles` advanced setting is off by default and not settable from
+  AppleScript. Until it is on the target falls back and says why. The second
+  prerequisite this bullet used to name — a hand-made `Browser` profile — no longer
+  exists; the tool ships its own dynamic profile. (Corrected 2026-08-07: the bullet had
+  outlived the change recorded in the `iterm2` row above.)
 - **`left`/`top` on iTerm2 select the axis, not the side.** iTerm2 places new panes
   right/below. The tool says so rather than silently doing something else.
 - **`_keep_open` does not survive Ctrl-C.** A pane closes outright on SIGINT, because
@@ -201,9 +236,9 @@ Combinations watched end to end. Anything not listed may still work; nobody has 
   `[mcp-app-viewer] browser exited (1). Press Enter to close this pane.` Left as is: a
   pane is disposable and dismiss-on-Ctrl-C is the behaviour you want there. Only the
   inline path, which hands your own shell back, needed the signal trapped.
-- **One surface per render, for the browser and iTerm2 targets.** Each render creates a
-  new tab/pane rather than reusing one. Does *not* apply to `vscode` (verified reusing
-  a pane) — see [pane-reuse-design.md](pane-reuse-design.md).
+- **One surface per render, for the browser targets.** Each render creates a new tab
+  rather than reusing one. Does *not* apply to `vscode` or `iterm2`, both of which are
+  verified reusing a pane — see [pane-reuse-design.md](pane-reuse-design.md).
 - **The inline path ignores the configured browser and theme.** `--inline-command` is
   invoked with the URL only, so `inline_command` re-derives both from defaults instead
   of the saved state. They agree today only because `browser` is unset and `theme` is
@@ -214,13 +249,61 @@ Combinations watched end to end. Anything not listed may still work; nobody has 
 - **GNU screen is undetected and unusable.** `detect_host()` reads `TMUX` but never
   `STY`, so the tool inlines into a multiplexer that mangles the frame. Unfixed by
   decision; use tmux instead. Full measurement above.
+- **`--near` always warns on the `vscode` target, and the warning is false.**
+  Measured: every `open --slot X --near Y` printed `no pane named 'Y' to place this
+  beside` on stderr while placing the pane correctly anyway. `mcp-app.sh` resolves the
+  anchor by reading `$SLOTS_DIR/$NEAR/session`, and that file is only ever written by
+  the **iTerm2** path, which scrapes a `mcp-app-viewer: pane session <id>` line out of
+  the log. The vscode path never emits one, so the lookup always misses. Placement
+  survives because `--pane-near` is forwarded to the extension independently of the
+  anchor, and the extension resolves the name against its own `panels` map. So the
+  behaviour is right and the message is wrong — which is the failure mode this project
+  exists to eliminate, pointed the other way: an alarming message about a working path
+  teaches you to ignore messages. Unfixed.
+- **`mcp-app.sh panes` can never report an empty list.** Measured: after `close --all`
+  removed every slot directory, `panes` still printed `main port 8777 closed?`. The
+  listing itself recreates it — `_use_slot` runs at script startup and `mkdir -p`s the
+  focused slot before any subcommand dispatches. Deleting the whole slots directory and
+  running `panes` recreates `slots/main` from nothing. The `closed?` marker is the only
+  thing distinguishing a resurrected ghost from a real pane, and the "no panes yet"
+  branch is unreachable once a focus has ever been set. Cosmetic, but it means the
+  listing overstates what exists. Unfixed.
+- **Slot names are not namespaced per agent profile, so profiles fight over panes.**
+  Not exercised, but structural and worth stating: profiles namespace their *state*
+  (`slots.codex`, `state.codex`) and their *base port* (Codex ships 8778 vs 8777), yet
+  the extension keys its `panels` map on the bare slot name. Claude Code's `main` and
+  Codex's `main` are therefore the same webview panel, and whichever renders second
+  silently repoints the other's pane at its own port. Codex's base port 8778 is also
+  exactly the first port Claude Code hands to a *named* slot; `_alloc_port` scans only
+  its own profile's slots directory, and the only thing preventing the clash is the
+  bind test, which cannot see a server that is momentarily down.
 
 ### Untested paths — no evidence either way
 
+- **Every VS Code fork**, including **Bob IDE**, VSCodium, Cursor and Windsurf. None is
+  installed here. The extension's own API surface should port — `createWebviewPanel`,
+  `window.tabGroups` and `workbench.action.newGroup*` are all stable VS Code API well
+  below the declared `^1.74` engine — so the likely failure is *discovery*, not
+  rendering, and it has three specific edges nobody has run. (1) `editor_profile()`
+  takes the **first** CLI found in `("code", "codium", "cursor", "windsurf", "bob",
+  "code-insiders")`, so on any machine that also has `code` — this one — a fork is never
+  chosen unless `MCP_APP_EDITOR_CLI` says so. (2) `install.sh` copies the extension into
+  exactly one editor's extensions directory, the discovered one; a fork needs its own
+  install run with that override. (3) The URI scheme is read from the fork's
+  `product.json` `urlProtocol` and falls back to `vscode` when absent — which would fire
+  the URI at VS Code instead of the fork, and `--open-url` would still exit 0, so
+  nothing would say so.
+- **The VS Code Codex/ChatGPT extension (`openai.chatgpt`), which is installed here, was
+  not exercised.** Worth separating from the Codex *CLI*: `install-codex.sh` wires
+  `~/.codex/hooks`, which is a Codex CLI mechanism, so the in-editor extension gets no
+  auto-open hook and no `/mcp-app` prompt from it. The display path itself is
+  agent-agnostic — it is `code --open-url` into our extension, and nothing in it knows
+  which assistant called — so a Codex CLI running in a VS Code terminal should behave
+  exactly as measured above, under `MCP_APP_PROFILE=codex`. Unmeasured either way, and
+  see the slot-namespacing limitation above before running two agents at once.
 - WezTerm and kitty splitters (neither installed).
 - browsh, and all five text browsers, including the `--fallback-preview` opt-in.
 - Named browser targets other than the system default.
-- The `iterm2` target's actual rendering (no `Browser` profile on this machine).
 - The `url` subcommand on the inline route: it shares the target/position/theme
   settings but has no inline path of its own, so on a plain terminal it opens a
   windowing browser. Not a bug that has been triaged, just untested territory.
@@ -243,6 +326,21 @@ likely places for the next false pass.
 The agent shell has **no controlling tty** (`/dev/tty` is "device not configured"), so
 printing escape sequences to your own stdout proves nothing at all. Drive a real
 window instead:
+
+- **`code --open-url` exit codes are worthless as evidence.** Measured on 1.132.0: it
+  exits **0** for a dead port, for `vscode://no.such.extension.at.all/...`, for a string
+  that is not a URI at all, and for a URL the extension itself refuses. The CLI hands
+  the URI to the running instance and returns; nothing downstream reports back. Every
+  claim about this path has to come from the pane, the heartbeat, or the log.
+- **Screen Recording permission is per-app, and an agent inherits its host's.** From a
+  shell under the VS Code extension host, `screencapture` fails with `could not create
+  image from display` even with the display awake (`IODisplayWrangler … USEABLE`) —
+  VS Code holds no Screen Recording grant. Terminal.app does, so route the capture
+  through it and the same command succeeds:
+  `osascript -e 'tell application "Terminal" to do script "screencapture -x /path.png; exit"'`.
+  Do not read the failure as a sleeping display or a broken screenshot tool.
+- **`System Events` is still blocked** — it does not error, it *hangs* and eventually
+  returns `AppleEvent timed out (-1712)` after ~2 minutes. Budget for the stall.
 
 - `osascript -e 'tell application "Terminal" to do script "bash /path/script.sh"'`
 - Raise by window id, then `screencapture -T <n> -x full.png`. `screencapture -R <rect>`
