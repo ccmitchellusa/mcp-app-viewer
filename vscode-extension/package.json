@@ -6,15 +6,25 @@
   "publisher": "ccmitchellusa",
   "private": true,
   "license": "MIT",
-  "engines": { "vscode": "^1.74.0" },
-  "categories": ["Other"],
-  "activationEvents": ["onUri"],
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onUri"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
       {
         "command": "mcpAppViewer.showLast",
         "title": "MCP App Viewer: Show last app"
+      },
+      {
+        "command": "mcpAppViewer.closeAll",
+        "title": "MCP App Viewer: Close All Panes"
       }
     ]
   }

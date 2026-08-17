@@ -8,7 +8,8 @@
 #
 #   mcp-app.sh                  status
 #   mcp-app.sh on | off         auto-open on tool results carrying an MCP App
-#   mcp-app.sh open <file|->    render one app's HTML now
+#   mcp-app.sh open <file|-> [data.json]   render one app's HTML now, optionally
+#                               delivering a tool result to it as a real host would
 #   mcp-app.sh url <address>    point the SAME display target at a live URL
 #   mcp-app.sh last             re-open the most recently captured app
 #   mcp-app.sh stop             stop the local viewer server
@@ -18,6 +19,13 @@
 #   mcp-app.sh theme [auto|light|dark]  colour scheme reported to the app (auto = OS)
 #   mcp-app.sh assets <dir|->   local dir serving the app's relative assets
 #   mcp-app.sh position <where> pane placement for split targets: right|left|top|bottom
+#   mcp-app.sh open --slot <name> [--near <pane>] [--position <p>] <file> [data]
+#                               render into a NAMED pane, optionally placed beside
+#                               an existing one -- several apps on screen at once
+#   mcp-app.sh panes            list named panes, their ports and liveness
+#   mcp-app.sh focus <pane>     which pane unnamed renders go to
+#   mcp-app.sh close <pane>|--all  stop pane server(s) and close the pane(s)
+#   mcp-app.sh events [n]       what the APP pushed back (map moved, tool asked for)
 #   mcp-app.sh log              tail the activity log
 #   mcp-app.sh oauth login|status|token|logout|watch|setup   interactive OAuth login + client setup for MCP servers
 
@@ -40,8 +48,16 @@ CONFIG="$CONFIG_DIR/config.sh"
 # app won the race.
 PROFILE="${MCP_APP_PROFILE:-}"
 STATE="$CONFIG_DIR/state${PROFILE:+.$PROFILE}"
-LAST_HTML="$CONFIG_DIR/last-app${PROFILE:+.$PROFILE}.html"
-PIDFILE="$CONFIG_DIR/server${PROFILE:+.$PROFILE}.pid"
+# A SLOT is one named pane: its own port, its own server, its own app. Panes are
+# not interchangeable surfaces — "put Tokyo below the Reykjavik pane" only means
+# something if a pane has a name and a remembered identity. `main` is the slot you
+# get when you do not ask for one, so single-pane use is unchanged.
+SLOTS_DIR="$CONFIG_DIR/slots${PROFILE:+.$PROFILE}"
+MCP_APP_PORT_BASE="${MCP_APP_PORT:-8777}"
+# What the APP pushed back. Survives viewer restarts on purpose: the agent reads
+# this after the fact, and it is usually not looking when the user acts.
+EVENTS="$CONFIG_DIR/app-events${PROFILE:+.$PROFILE}.jsonl"
+
 LOG="${MCP_APP_LOG:-/tmp/mcp-app-viewer.log}"
 
 mkdir -p "$CONFIG_DIR"
@@ -72,9 +88,83 @@ _set() { # <key> <value>
   mv "$STATE.tmp" "$STATE"
 }
 
-# Resolve the port from state now that _get exists — `mcp-app.sh port <n>` has to
-# affect the server that actually starts, not just the number printed by `status`.
-MCP_APP_PORT=$(_get port "$MCP_APP_PORT")
+MCP_APP_PORT_BASE=$(_get port "$MCP_APP_PORT_BASE")
+
+# Point every per-slot path at $1. Called once for the focused slot, and again if
+# --slot names a different one.
+_use_slot() {
+  SLOT="${1:-main}"
+  SLOT_DIR="$SLOTS_DIR/$SLOT"
+  LAST_HTML="$SLOT_DIR/app.html"
+  LAST_DATA="$SLOT_DIR/data.json"
+  PIDFILE="$SLOT_DIR/server.pid"
+  # Touched by the server every time this slot's pane polls /version. Its AGE is
+  # the only evidence the pane still exists — nothing reports a closed pane.
+  HEARTBEAT="$SLOT_DIR/heartbeat"
+  SESSION_FILE="$SLOT_DIR/session"
+  mkdir -p "$SLOT_DIR"
+  _alloc_port
+}
+
+# One port per slot, allocated once and remembered. Two servers on one port would
+# each silently kill the other, and you would be looking at whichever won the race.
+_alloc_port() {
+  if [ -s "$SLOT_DIR/port" ]; then MCP_APP_PORT=$(cat "$SLOT_DIR/port"); return; fi
+  local p=$MCP_APP_PORT_BASE
+  if [ "$SLOT" != "main" ]; then
+    p=$((MCP_APP_PORT_BASE + 1))
+    # Bounded, with a breather. When the bind probe fails for a reason that is
+    # not "port in use" -- python missing from PATH, a sandbox denying bind --
+    # every port "fails" and the unbounded version of this loop spun a full
+    # core rescanning slot files forever (five of those ran hot for a week,
+    # 2026-08-17). 200 ports is more panes than any screen will ever hold, so
+    # past that the probe itself is broken: fail loudly instead.
+    local tries=0
+    while :; do
+      local taken=0 f
+      for f in "$SLOTS_DIR"/*/port; do
+        [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$p" ] && taken=1
+      done
+      if [ "$taken" = "0" ] && "$PY" -c 'import socket,sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()' "$p" 2>/dev/null; then break; fi
+      p=$((p + 1))
+      tries=$((tries + 1))
+      if [ "$tries" -ge 200 ]; then
+        echo "mcp-app: no bindable port in $((MCP_APP_PORT_BASE + 1))..$p after $tries tries -- bind probe broken or range exhausted" >&2
+        return 1
+      fi
+      sleep 0.05
+    done
+  fi
+  echo "$p" > "$SLOT_DIR/port"
+  MCP_APP_PORT=$p
+}
+
+# "below" is what a person says; "bottom" is what the flag takes. Rejecting the
+# word everyone uses is a paper cut with no upside.
+_norm_position() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    below|under|beneath|down|bottom) echo bottom ;;
+    above|over|up|top)               echo top ;;
+    beside|next|after|right)         echo right ;;
+    before|left)                     echo left ;;
+    *) echo right ;;
+  esac
+}
+
+_slot_alive() { # <slot> — is its pane still polling?
+  local hb="$SLOTS_DIR/$1/heartbeat"
+  [ -s "$hb" ] || return 1
+  "$PY" -c 'import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime(sys.argv[1])<=5 else 1)' "$hb" 2>/dev/null
+}
+
+_use_slot "$(_get slot main)"
 
 # On a plain terminal -- xterm, Terminal.app, a serial console, SSH with no
 # multiplexer -- there is nothing to split, and falling back to a windowing browser
@@ -136,8 +226,8 @@ stop_server() {
 # serves it. Restarting is deliberate: a viewer pinned to a stale app is worse
 # than none, because you would be looking at the previous app believing it is
 # the current one.
-open_app() { # <file|->
-  local src="${1:--}" html
+open_app() { # <file|-> [data-file]
+  local src="${1:--}" data="${2:-}" html
   if [ "$src" = "-" ]; then html=$(cat); else html=$(cat "$src" 2>/dev/null); fi
   if [ -z "${html//[[:space:]]/}" ]; then
     echo "no app HTML on input — nothing to render" >&2
@@ -145,17 +235,75 @@ open_app() { # <file|->
   fi
   printf '%s' "$html" > "$LAST_HTML"
 
-  _server_running && { kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE"; sleep 0.3; }
+  # The payload the app will receive. Cleared when this render has none: carrying
+  # the PREVIOUS app's data forward would draw a confident, wrong picture — the
+  # last location on the new map — and nothing on screen would say it was stale.
+  if [ -n "$data" ] && [ -s "$data" ]; then
+    [ "$data" -ef "$LAST_DATA" ] || cp "$data" "$LAST_DATA"   # 'last' replays in place
+  else
+    : > "$LAST_DATA"
+  fi
 
   local target; target=$(_get target "$MCP_APP_TARGET")
+
+  # REUSE THE OPEN PANE. Decided BEFORE the restart, because the evidence — the
+  # heartbeat's age — is written by the server we are about to kill.
+  #
+  # Only on the automatic path. Someone typing `open` wants to see the app now, and
+  # inferring they already can reads as a broken command; the pane they are meant to
+  # look at may be on another tab entirely.
+  #
+  # Three conditions, all required: a live poll within 5s (a closed pane stops
+  # polling, so this self-corrects), the same display target as last time (asking
+  # for somewhere else means you want it somewhere else), and a running server.
+  local reuse=0
+  if [ -n "${MCP_APP_AUTO:-}" ] && _server_running && [ -s "$HEARTBEAT" ] &&
+     [ "$(_get pane_target "")" = "$target" ] &&
+     "$PY" -c 'import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime(sys.argv[1])<=5 else 1)' "$HEARTBEAT" 2>/dev/null; then
+    reuse=1
+  fi
+
+  _server_running && { kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE"; sleep 0.3; }
+  # Stale by definition now: it belongs to the server we just killed. Left in place,
+  # the NEXT render would read it as proof of a live pane and skip an open that was
+  # needed.
+  rm -f "$HEARTBEAT"
   local base;   base=$(_get base "$MCP_APP_BASE_URL")
   local assets; assets=$(_get assets "$MCP_APP_ASSETS")
-  local pos; pos=$(_get position "$MCP_APP_POSITION")
+  local pos; pos="${OVERRIDE_POSITION:-$(_get position "$MCP_APP_POSITION")}"
   local tb;  tb=$(_get browser "")
   local th;  th=$(_get theme "auto")
   local args=(--html-file "$LAST_HTML" --port "$MCP_APP_PORT" --browser "$target" --position "$pos")
   [ -n "$base" ]   && args+=(--base-url "$base")
   [ -n "$assets" ] && args+=(--assets-dir "$assets")
+  [ -s "$LAST_DATA" ] && args+=(--data-file "$LAST_DATA")
+  args+=(--events-file "$EVENTS" --heartbeat-file "$HEARTBEAT")
+  args+=(--event-label "$SLOT" --pane-profile "MCP App Viewer ($SLOT)" --pane-slot "$SLOT")
+  [ -n "${NEAR:-}" ] && args+=(--pane-near "$NEAR")
+
+  # WHERE the new pane goes. `--near X` splits from X's pane; otherwise split from
+  # this slot's own last pane so a reopened slot returns to where it was. Falling
+  # back to "wherever the cursor is" only when we have no better idea keeps panes
+  # from marching across the window as focus follows each new split.
+  if [ "$reuse" != "1" ]; then
+    local anchor=""
+    if [ -n "${NEAR:-}" ]; then
+      anchor=$(cat "$SLOTS_DIR/$NEAR/session" 2>/dev/null)
+      [ -n "$anchor" ] || echo "no pane named '$NEAR' to place this beside" >&2
+    elif [ -s "$SESSION_FILE" ]; then
+      anchor=$(cat "$SESSION_FILE")
+    elif [ -n "${ITERM_SESSION_ID:-}" ]; then
+      # OUR OWN terminal session, and this is the fix for a real surprise: with no
+      # anchor iTerm2 splits the FRONTMOST window, so moving to a different
+      # full-screen iTerm2 window meant the next app opened over there instead.
+      # Panes belong beside the agent that made them, not beside whatever you
+      # happened to be looking at. ITERM_SESSION_ID is "w3t0p0:<uuid>".
+      anchor="${ITERM_SESSION_ID#*:}"
+    fi
+    [ -n "$anchor" ] && args+=(--pane-anchor "$anchor")
+  fi
+  # The pane is already showing this URL and polls itself up to date.
+  [ "$reuse" = "1" ] && args+=(--no-open)
   [ -n "$tb" ]     && args+=(--terminal-browser "$tb")
   [ -n "$th" ]     && args+=(--theme "$th")
 
@@ -179,7 +327,13 @@ open_app() { # <file|->
   echo $! > "$PIDFILE"
   sleep 0.5
   if _server_running; then
-    echo "serving http://127.0.0.1:$MCP_APP_PORT/app/index.html"
+    echo "serving http://127.0.0.1:$MCP_APP_PORT/app/index.html  (pane '$SLOT')"
+    if [ "$reuse" = "1" ]; then
+      echo "reused the open pane (it polls /version and reloads itself)"
+      log "reused open pane"
+    else
+      _set pane_target "$target"
+    fi
     if [ -n "$base" ]; then echo "assets proxy: $base"; fi
     # The viewer runs under nohup with stdout redirected to the log, so WHERE it
     # displayed the app -- the one line that says whether your chosen target worked
@@ -187,20 +341,24 @@ open_app() { # <file|->
     # than usual here: "displayed on system (fallback)" and "displayed on terminal"
     # are the difference between a working target and a broken one, and both look
     # identical when all you see is "serving".
-    local shown=""
-    # Up to ~5s. A browser target confirms almost instantly and pays none of it;
-    # a terminal split has to run osascript AND start Chromium, which measured ~3s
-    # -- and that is precisely the case where you most want to be told whether it
-    # worked, so waiting is the right trade.
-    for _ in $(seq 1 20); do
+    if [ "$reuse" != "1" ]; then
+      local shown="" sid=""
+      # Up to ~5s. A browser target confirms almost instantly and pays none of it;
+      # a terminal split has to run osascript AND start Chromium, which measured ~3s
+      # -- and that is precisely the case where you most want to be told whether it
+      # worked, so waiting is the right trade.
+      for _ in $(seq 1 20); do
+        sid=$(tail -c "+$((log_mark + 1))" "$LOG" 2>/dev/null | grep -a "mcp-app-viewer: pane session " | tail -1)
+      [ -n "$sid" ] && printf '%s' "${sid##*pane session }" > "$SESSION_FILE"
       shown=$(tail -c "+$((log_mark + 1))" "$LOG" 2>/dev/null | grep -a "mcp-app-viewer: displayed on" | tail -1)
-      [ -n "$shown" ] && break
-      sleep 0.25
-    done
-    if [ -n "$shown" ]; then
-      echo "${shown#mcp-app-viewer: }"
-    else
-      echo "displayed on: (no confirmation yet — see '/mcp-app log')"
+        [ -n "$shown" ] && break
+        sleep 0.25
+      done
+      if [ -n "$shown" ]; then
+        echo "${shown#mcp-app-viewer: }"
+      else
+        echo "displayed on: (no confirmation yet — see '/mcp-app log')"
+      fi
     fi
     log "opened app ($(printf '%s' "$html" | wc -c | tr -d ' ') bytes)"
     # OUTSIDE the confirmation branch, deliberately. It used to be inside, which
@@ -225,7 +383,73 @@ case "${1:-status}" in
     echo "auto-open OFF — use '/mcp-app last' or '/mcp-app open <file>' to render manually"
     ;;
   open)
-    shift; open_app "${1:--}"
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --slot)     shift; _use_slot "${1:?--slot needs a name}"; shift ;;
+        --near)     shift; NEAR="${1:?--near needs a pane name}"; shift ;;
+        --position) shift; OVERRIDE_POSITION=$(_norm_position "${1:?--position needs a value}"); shift ;;
+        --) shift; break ;;
+        -*) echo "unknown flag: $1" >&2; exit 2 ;;
+        *) break ;;
+      esac
+    done
+    open_app "${1:--}" "${2:-}"
+    ;;
+  panes)
+    # Every pane, so "put it next to Reykjavik" has something to name. Liveness is
+    # the heartbeat, because a closed pane never tells anyone it closed.
+    shift
+    found=0
+    for d in "$SLOTS_DIR"/*/; do
+      [ -d "$d" ] || continue
+      found=1
+      n=$(basename "$d")
+      alive=$(_slot_alive "$n" && echo live || echo "closed?")
+      mark=$([ "$n" = "$(_get slot main)" ] && echo " <- focused" || echo "")
+      echo "$n  port $(cat "$d/port" 2>/dev/null || echo '?')  $alive$mark"
+    done
+    [ "$found" = "1" ] || echo "no panes yet"
+    ;;
+  focus)
+    shift
+    [ -n "${1:-}" ] || { echo "usage: mcp-app.sh focus <pane>" >&2; exit 2; }
+    _set slot "$1"; echo "unnamed renders now go to pane '$1'"
+    ;;
+  close)
+    shift
+    [ -n "${1:-}" ] || { echo "usage: mcp-app.sh close <pane>|--all" >&2; exit 2; }
+    if [ "$1" = "--all" ] || [ "$1" = "all" ]; then
+      n=0
+      for d in "$SLOTS_DIR"/*/; do
+        [ -d "$d" ] || continue
+        "$0" close "$(basename "$d")" >/dev/null 2>&1 && n=$((n + 1))
+      done
+      echo "closed $n pane(s)"
+      exit 0
+    fi
+    d="$SLOTS_DIR/$1"
+    [ -d "$d" ] || { echo "no pane named '$1'"; exit 0; }
+    [ -s "$d/server.pid" ] && kill "$(cat "$d/server.pid")" 2>/dev/null
+    sess=$(cat "$d/session" 2>/dev/null)
+    if [ -n "$sess" ] && [ "$(_get target "$MCP_APP_TARGET")" = "iterm2" ]; then
+      osascript -e "tell application \"iTerm2\"
+        repeat with w in windows
+          repeat with t in tabs of w
+            repeat with s in sessions of t
+              if (id of s) is \"$sess\" then close s
+            end repeat
+          end repeat
+        end repeat
+      end tell" >/dev/null 2>&1
+    fi
+    if [ "$(_get target "$MCP_APP_TARGET")" = "vscode" ]; then
+      "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import display_targets as d; d.close_vscode_pane(sys.argv[2])' \
+        "$PROJECT_DIR/bin" "$1" >/dev/null 2>&1
+    fi
+    rm -rf "$d"
+    rm -f "$HOME/Library/Application Support/iTerm2/DynamicProfiles/MCP_App_Viewer__$1_.json"
+    echo "pane '$1' closed"
     ;;
   url)
     shift
@@ -248,7 +472,7 @@ PYEOF
     ;;
   last)
     [ -s "$LAST_HTML" ] || { echo "no app captured yet"; exit 0; }
-    open_app "$LAST_HTML"
+    open_app "$LAST_HTML" "$LAST_DATA"
     ;;
   stop)
     stop_server
@@ -349,6 +573,15 @@ PYEOF
   port)
     shift; _set port "${1:-8777}"; echo "viewer port: ${1:-8777} (restart to apply)"
     ;;
+  events)
+    # The app -> agent direction. `clear` matters: an event read once and acted on
+    # is history, and a stale "the user moved the map" replayed next session would
+    # send the agent chasing something nobody asked for.
+    shift
+    if [ "${1:-}" = "clear" ]; then : > "$EVENTS"; echo "app events cleared"; exit 0; fi
+    [ -s "$EVENTS" ] || { echo "no app events yet"; exit 0; }
+    tail -n "${1:-20}" "$EVENTS"
+    ;;
   log)
     tail -n "${2:-30}" "$LOG" 2>/dev/null || echo "no log yet"
     ;;
@@ -381,6 +614,9 @@ PYEOF
     echo "  term brwsr: $(_get browser "auto")"
     echo "  theme     : $(_get theme "auto")"
     echo "  last app  : $([ -s "$LAST_HTML" ] && echo "$(wc -c < "$LAST_HTML" | tr -d ' ') bytes captured" || echo "none")"
+    echo "  app data  : $([ -s "$LAST_DATA" ] && echo "$(wc -c < "$LAST_DATA" | tr -d ' ') bytes (app receives a tool result)" || echo "none (app shows its empty state)")"
+    echo "  pane      : $SLOT (port $MCP_APP_PORT) — 'mcp-app.sh panes' for all"
+    echo "  app events: $([ -s "$EVENTS" ] && echo "$(wc -l < "$EVENTS" | tr -d ' ') recorded (/mcp-app events)" || echo "none")"
     echo "  log       : $LOG"
     ;;
 esac
