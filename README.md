@@ -158,6 +158,14 @@ calls the command only an extension can call. `install.sh` copies it into
 `~/.vscode/extensions/` when `code` is on PATH — no `.vsix`, no `vsce`, no npm.
 **Reload VS Code once after install** (`Developer: Reload Window`).
 
+The extension is kept in this repository as a bundled subproject, not a separate
+product. Its subproject notes live in [`vscode-extension/README.md`](vscode-extension/README.md),
+and the runtime/extension boundary is recorded in
+[`vscode-extension/CONTRACT.md`](vscode-extension/CONTRACT.md).
+
+For full install, targeting, and troubleshooting instructions for VS Code, Cursor,
+and Bob IDE, see [`vscode-extension/README.md`](vscode-extension/README.md).
+
 It is also the one target with **real four-way placement**: VS Code has genuine editor
 groups, so unlike iTerm2, `left` and `top` mean what they say.
 
@@ -181,6 +189,11 @@ build. `install.sh` and the viewer both read it through one implementation:
 python3 bin/display_targets.py --editor-profile
 { "cli": "code", "url_protocol": "vscode", "data_folder": ".vscode", ... }
 ```
+
+When run inside a VS Code-family integrated terminal, the viewer now prefers the
+CURRENT host editor over PATH order. That matters on machines with several forks
+installed: inside Cursor it should open Cursor, inside Bob IDE it should open Bob,
+and only outside an editor does it fall back to the first available CLI on PATH.
 
 A fork nobody has heard of works with no code change. Override any part with
 `MCP_APP_EDITOR_CLI`, `MCP_APP_EDITOR_URI_SCHEME`, `MCP_APP_EDITOR_DATA_FOLDER`, or
@@ -377,6 +390,11 @@ Deep-dive notes for the paths that needed one:
   plain-terminal (inline) route, truecolor, and the three defects it uncovered
 - [`docs/pane-reuse-design.md`](docs/pane-reuse-design.md) — the designed-not-built fix
   for one-surface-per-render
+- [`docs/vscode-extension-design.md`](docs/vscode-extension-design.md) — why the editor
+  companion stays in-repo, its ownership boundary, and the delivery plan
+- [`docs/editor-fork-verification.md`](docs/editor-fork-verification.md) — what to
+  measure before promoting Cursor, Bob IDE, or other forks from inferred support to
+  verified support
 
 ## Credits
 

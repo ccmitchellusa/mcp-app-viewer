@@ -184,6 +184,126 @@ _VSCODE_DEFAULTS = {
     "data_folder": ".vscode",
 }
 
+_EDITOR_HINT_PATTERNS = (
+    ("visual studio code insiders", "code-insiders"),
+    ("code - insiders", "code-insiders"),
+    ("cursor", "cursor"),
+    ("windsurf", "windsurf"),
+    ("vscodium", "codium"),
+    ("codium", "codium"),
+    ("bob ide", "bob"),
+    ("visual studio code", "code"),
+    ("vscode", "code"),
+    ("code helper", "code"),
+)
+
+
+def _editor_cli_from_text(text: str) -> str:
+    """Best-effort editor CLI hint from a process title or environment value.
+
+    Integrated terminals often know which editor hosts them, but the exact signal
+    differs: TERM_PROGRAM may say ``vscode`` while the process ancestry still names
+    ``Cursor`` or ``Bob``. Convert any such text into one of our supported CLI names.
+    """
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return ""
+    for needle, cli in _EDITOR_HINT_PATTERNS:
+        if needle in lowered:
+            return cli
+    return ""
+
+
+def _editor_host_process_lines() -> list[str]:
+    """Commands for this process and its ancestors, nearest-first.
+
+    A VS Code-family integrated terminal normally sits beneath the hosting editor in
+    the process tree. Walking the ancestry gives us a way to prefer the CURRENT host
+    editor over whichever CLI merely appears first on PATH.
+    """
+    try:
+        done = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,ppid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    if done.returncode != 0:
+        return []
+
+    parents: dict[int, tuple[int, str]] = {}
+    for raw in done.stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        parents[pid] = (ppid, parts[2])
+
+    lines: list[str] = []
+    pid = os.getpid()
+    seen: set[int] = set()
+    for _ in range(12):
+        if pid in seen or pid not in parents:
+            break
+        seen.add(pid)
+        ppid, command = parents[pid]
+        lines.append(command)
+        if ppid <= 1:
+            break
+        pid = ppid
+    return lines
+
+
+def _host_editor_cli_hint() -> str:
+    """Which VS Code-family editor appears to host the current session?
+
+    Order matters. Process ancestry can identify specific forks (Cursor, Bob IDE,
+    Windsurf) even when TERM_PROGRAM is the generic ``vscode``. Only if ancestry gives
+    no answer do we fall back to environment hints.
+    """
+    for command in _editor_host_process_lines():
+        cli = _editor_cli_from_text(command)
+        if cli:
+            return cli
+
+    env_candidates = [
+        os.environ.get("TERM_PROGRAM", ""),
+        os.environ.get("TERM_PROGRAM_VERSION", ""),
+    ]
+    for text in env_candidates:
+        cli = _editor_cli_from_text(text)
+        if cli:
+            return cli
+    return ""
+
+
+def _resolve_editor_cli() -> tuple[str, str, str]:
+    """(cli, source, host_hint) for the editor target.
+
+    Source is one of: env, host, path, none.
+    """
+    env_cli = os.environ.get("MCP_APP_EDITOR_CLI") or ""
+    if env_cli and shutil.which(env_cli):
+        return env_cli, "env", ""
+
+    host_hint = _host_editor_cli_hint()
+    if host_hint and shutil.which(host_hint):
+        return host_hint, "host", host_hint
+
+    cli = next((c for c in _EDITOR_CLI_CANDIDATES if shutil.which(c)), "")
+    if cli:
+        return cli, "path", host_hint
+    return "", "none", host_hint
+
 
 def _find_product_json(cli_path: str) -> dict | None:
     """Walk up from a resolved CLI binary to its build's product.json.
@@ -206,12 +326,11 @@ def _find_product_json(cli_path: str) -> dict | None:
 def editor_profile() -> dict:
     """The editor triple: {cli, url_protocol, data_folder, extensions_dir}.
 
-    Env overrides win, so a fork whose product.json lies (or is absent) is still
-    usable without patching this file.
+    Env overrides win, but absent that we prefer the CURRENT hosting editor (Cursor,
+    Bob IDE, Windsurf, VS Code) over whichever CLI merely appears first on PATH. A
+    shell running inside Cursor should open Cursor, not some unrelated VS Code build.
     """
-    cli = os.environ.get("MCP_APP_EDITOR_CLI") or ""
-    if not cli or not shutil.which(cli):
-        cli = next((c for c in _EDITOR_CLI_CANDIDATES if shutil.which(c)), "")
+    cli, source, host_hint = _resolve_editor_cli()
 
     profile = dict(_VSCODE_DEFAULTS)
     if cli:
@@ -227,6 +346,8 @@ def editor_profile() -> dict:
         pathlib.Path.home() / profile["data_folder"] / "extensions"
     )
     profile["found"] = bool(cli)
+    profile["source"] = source
+    profile["host_hint"] = host_hint
     return profile
 
 

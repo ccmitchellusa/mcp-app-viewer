@@ -4,10 +4,32 @@
   "description": "Opens a locally-served MCP App in VS Code's Simple Browser, beside your editor.",
   "version": "0.1.0",
   "publisher": "ccmitchellusa",
-  "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ccmitchellusa/mcp-app-viewer.git",
+    "directory": "vscode-extension"
+  },
+  "homepage": "https://github.com/ccmitchellusa/mcp-app-viewer#readme",
+  "bugs": {
+    "url": "https://github.com/ccmitchellusa/mcp-app-viewer/issues"
+  },
   "engines": { "vscode": "^1.74.0" },
   "categories": ["Other"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "vscode",
+    "cursor",
+    "bob-ide",
+    "simple-browser"
+  ],
+  "extensionKind": ["ui"],
+  "galleryBanner": {
+    "color": "#0b1020",
+    "theme": "dark"
+  },
+  "markdown": "github",
   "activationEvents": ["onUri"],
   "main": "./extension.js",
   "contributes": {

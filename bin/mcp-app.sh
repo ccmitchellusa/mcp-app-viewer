@@ -44,6 +44,15 @@ LAST_HTML="$CONFIG_DIR/last-app${PROFILE:+.$PROFILE}.html"
 PIDFILE="$CONFIG_DIR/server${PROFILE:+.$PROFILE}.pid"
 LOG="${MCP_APP_LOG:-/tmp/mcp-app-viewer.log}"
 
+# OAuth credentials are part of the agent-profile boundary, not just the viewer
+# pane state. When a profile is set, keep its token store under a profile-scoped
+# subtree unless the caller explicitly overrides MCP_OAUTH_STORE.
+if [ -n "$PROFILE" ]; then
+  export MCP_OAUTH_PROFILE="$PROFILE"
+  : "${MCP_OAUTH_STORE:=$CONFIG_DIR/profiles/$PROFILE/oauth-tokens.json}"
+  export MCP_OAUTH_STORE
+fi
+
 mkdir -p "$CONFIG_DIR"
 # shellcheck disable=SC1090
 [ -f "$CONFIG" ] && . "$CONFIG"

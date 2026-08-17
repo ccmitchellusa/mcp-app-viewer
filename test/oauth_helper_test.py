@@ -203,21 +203,22 @@ class StubIssuer:
 
 
 def _args(**kw) -> object:
-    class A:
-        pass
-    a = A()
-    a.issuer = kw.pop("issuer", STUB.issuer)
-    a.client_id = kw.pop("client_id", "client-abc")
-    a.client_secret = kw.pop("client_secret", None)
-    a.scope = "openid"
-    a.flow = kw.pop("flow", "auto")
-    a.manual = False
-    a.browser = "none"
-    a.timeout = 30
-    a.account = kw.pop("account", None)
-    for k, v in kw.items():
-        setattr(a, k, v)
-    return a
+    from types import SimpleNamespace
+
+    payload = {
+        "issuer": kw.pop("issuer", STUB.issuer),
+        "client_id": kw.pop("client_id", "client-abc"),
+        "client_secret": kw.pop("client_secret", None),
+        "scope": "openid",
+        "flow": kw.pop("flow", "auto"),
+        "manual": False,
+        "browser": "none",
+        "timeout": 30,
+        "account": kw.pop("account", None),
+        "profile": kw.pop("profile", None),
+    }
+    payload.update(kw)
+    return SimpleNamespace(**payload)
 
 
 def _play_browser(url: str, *rest, **kw) -> str:
@@ -249,10 +250,35 @@ def test_pkce_pair() -> None:
 
 def test_store_permissions() -> None:
     helper._save_store({"k": {"access_token": "x"}})
-    mode = oct(os.stat(helper.TOKEN_STORE).st_mode & 0o777)
+    mode = oct(os.stat(helper.token_store()).st_mode & 0o777)
     check("store: file mode 0600", mode == "0o600", f"mode={mode}")
     check("store: round-trips", helper._load_store() == {"k": {"access_token": "x"}})
-    helper.TOKEN_STORE.unlink()
+    helper.token_store().unlink()
+
+
+def test_profile_scoped_store_path() -> None:
+    old_store = os.environ.pop("MCP_OAUTH_STORE", None)
+    old_profile = os.environ.get("MCP_OAUTH_PROFILE")
+    old_cfg = os.environ.get("MCP_APP_CONFIG_DIR")
+    profile_root = _TMP / "profile-config"
+    os.environ["MCP_APP_CONFIG_DIR"] = str(profile_root)
+    os.environ["MCP_OAUTH_PROFILE"] = "hermes-work"
+    try:
+        expected = profile_root / "profiles" / "hermes-work" / "oauth-tokens.json"
+        check("profile store: derived from MCP_APP_CONFIG_DIR + profile",
+              helper.token_store() == expected,
+              f"got={helper.token_store()} expected={expected}")
+    finally:
+        if old_store is not None:
+            os.environ["MCP_OAUTH_STORE"] = old_store
+        if old_profile is None:
+            os.environ.pop("MCP_OAUTH_PROFILE", None)
+        else:
+            os.environ["MCP_OAUTH_PROFILE"] = old_profile
+        if old_cfg is None:
+            os.environ.pop("MCP_APP_CONFIG_DIR", None)
+        else:
+            os.environ["MCP_APP_CONFIG_DIR"] = old_cfg
 
 
 def test_login_status_token_logout() -> None:
@@ -581,7 +607,7 @@ def test_migration_from_legacy_keys() -> None:
     check("migration: legacy key re-keyed to issuer|slot|account on load",
           new_key in store and legacy_key not in store)
     helper._save_store(store)
-    on_disk = json.loads(helper.TOKEN_STORE.read_text("utf-8"))
+    on_disk = json.loads(helper.token_store().read_text("utf-8"))
     check("migration: save writes the new key format",
           new_key in on_disk and legacy_key not in on_disk)
 

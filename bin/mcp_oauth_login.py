@@ -72,11 +72,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-TOKEN_STORE = Path(
-    os.environ.get(
-        "MCP_OAUTH_STORE", Path.home() / ".mcp-app-viewer" / "oauth-tokens.json"
-    )
-)
+def token_store() -> Path:
+    """Credential store path for OAuth tokens.
+
+    Precedence:
+    1. Explicit $MCP_OAUTH_STORE override.
+    2. Profile-scoped store under $MCP_APP_CONFIG_DIR/profiles/<profile>/ when
+       $MCP_OAUTH_PROFILE or $MCP_APP_PROFILE is set.
+    3. Legacy single-user store under ~/.mcp-app-viewer/oauth-tokens.json.
+    """
+    explicit = os.environ.get("MCP_OAUTH_STORE")
+    if explicit:
+        return Path(explicit).expanduser()
+    profile = (
+        os.environ.get("MCP_OAUTH_PROFILE") or os.environ.get("MCP_APP_PROFILE") or ""
+    ).strip()
+    if profile:
+        config_dir = Path(
+            os.environ.get("MCP_APP_CONFIG_DIR", Path.home() / ".config" / "mcp-app-viewer")
+        ).expanduser()
+        return config_dir / "profiles" / profile / "oauth-tokens.json"
+    return (Path.home() / ".mcp-app-viewer" / "oauth-tokens.json").expanduser()
+
+
 CALLBACK_PATH = "/oauth/callback"
 # Refresh this far ahead of expiry so a token handed out is not already stale
 # by the time the client's request lands.
@@ -182,14 +200,15 @@ def _store_key(issuer: str, client_id: str, account: str | None = None) -> str:
 
 
 def _load_store() -> dict:
+    store_path = token_store()
     try:
-        store = json.loads(TOKEN_STORE.read_text("utf-8"))
+        store = json.loads(store_path.read_text("utf-8"))
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError:
         # A corrupt store must not silently become an empty one — that would
         # look like a logout. Refuse and say where the file is.
-        raise OAuthError(f"token store {TOKEN_STORE} is corrupt — fix or delete it")
+        raise OAuthError(f"token store {store_path} is corrupt — fix or delete it")
     # Migration: entries written before the store became multi-account live
     # under issuer|slot. When the token carries the IBM Cloud account
     # (account.bss), re-key to issuer|slot|account so the next save writes
@@ -205,12 +224,13 @@ def _load_store() -> dict:
 
 
 def _save_store(store: dict) -> None:
-    TOKEN_STORE.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(TOKEN_STORE.parent, 0o700)
-    tmp = TOKEN_STORE.with_suffix(".tmp")
+    store_path = token_store()
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(store_path.parent, 0o700)
+    tmp = store_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(store, indent=2), encoding="utf-8")
     os.chmod(tmp, 0o600)
-    tmp.replace(TOKEN_STORE)
+    tmp.replace(store_path)
 
 
 def _jwt_claims(token: str) -> dict:
@@ -411,7 +431,7 @@ def _report_login(issuer: str, entry: dict) -> None:
         print(f"  account     : {entry['account']}")
     print(f"  token expiry: {when}")
     print(f"  refresh     : {'yes' if entry.get('refresh_token') else 'no'}")
-    print(f"  stored in   : {TOKEN_STORE} (mode 0600)")
+    print(f"  stored in   : {token_store()} (mode 0600)")
     print("use 'mcp-app.sh oauth token' to print a bearer token for client config")
 
 
@@ -997,6 +1017,11 @@ def main(argv: list[str] | None = None) -> int:
                 default=os.environ.get("MCP_OAUTH_CLIENT_SECRET"),
                 help="optional client secret for providers requiring HTTP Basic at the token endpoint (default: $MCP_OAUTH_CLIENT_SECRET)",
             )
+        p.add_argument(
+            "--profile",
+            default=os.environ.get("MCP_OAUTH_PROFILE") or os.environ.get("MCP_APP_PROFILE"),
+            help="profile namespace for the OAuth token store (default: $MCP_OAUTH_PROFILE or $MCP_APP_PROFILE)",
+        )
 
     p_login = sub.add_parser("login", help="browser sign-in, store tokens")
     common(p_login)
@@ -1102,6 +1127,8 @@ def main(argv: list[str] | None = None) -> int:
     p_setup.set_defaults(func=cmd_setup)
 
     args = ap.parse_args(argv)
+    if getattr(args, "profile", None):
+        os.environ["MCP_OAUTH_PROFILE"] = args.profile
     # status with no --issuer lists every stored login; the rest need one.
     needs_issuer = args.command != "status"
     for opt in ("issuer", "client_id"):
