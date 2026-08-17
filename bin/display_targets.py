@@ -85,6 +85,36 @@ _ITERM2_PROFILE_FILE = _ITERM2_PROFILE_DIR / "mcp-app-viewer.json"
 _ITERM2_PROFILE_NAME = "MCP App Viewer"
 
 
+def _iterm2_version() -> tuple[int, ...] | None:
+    """Installed iTerm2 version as a tuple, or None when it cannot be read.
+
+    Resolved through LaunchServices rather than a hardcoded /Applications path, so
+    an iTerm2 kept elsewhere still reports a version instead of silently reading as
+    "not installed" and failing the readiness check for the wrong reason.
+    """
+    found = subprocess.run(
+        ["osascript", "-e", 'POSIX path of (path to application "iTerm")'],
+        capture_output=True, text=True,
+    )
+    if found.returncode != 0 or not found.stdout.strip():
+        return None
+    plist = pathlib.Path(found.stdout.strip()) / "Contents" / "Info.plist"
+    try:
+        import plistlib
+
+        info = plistlib.loads(plist.read_bytes())
+    except Exception:  # noqa: BLE001 - unreadable bundle is "unknown", not an error
+        return None
+    raw = str(info.get("CFBundleShortVersionString") or "")
+    parts = []
+    for chunk in raw.split("."):
+        digits = "".join(c for c in chunk if c.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) or None
+
+
 def _iterm2_browser_readiness() -> tuple[bool, str]:
     """Can iTerm2 render a web view in a pane? Returns (ready, why-not).
 
@@ -114,12 +144,28 @@ def _iterm2_browser_readiness() -> tuple[bool, str]:
     except Exception:  # noqa: BLE001
         return False, "could not parse iTerm2 preferences"
 
-    if not prefs.get("browserProfiles"):
+    if prefs.get("browserProfiles"):
+        return True, ""
+
+    # The key is ABSENT on 3.6+, where browser panes shipped as a normal feature and
+    # the advanced setting was retired. Gating on it alone therefore refused the
+    # exact versions that support this best, and sent the user hunting through
+    # Settings > Advanced for a row that is not there — a check that is not merely
+    # wrong but actively misdirecting. Version is the honest signal only here, where
+    # the capability genuinely does not exist below a release.
+    version = _iterm2_version()
+    if version and version >= (3, 6):
+        return True, ""
+    if version:
+        shown = ".".join(str(n) for n in version)
         return False, (
-            "iTerm2's browser panes are off. Settings > Advanced > search "
-            "'browserProfiles' > on, then restart iTerm2."
+            f"iTerm2 {shown} has no browser panes. Upgrade to 3.6 or later, or on "
+            "3.5.x enable Settings > Advanced > 'browserProfiles' and restart iTerm2."
         )
-    return True, ""
+    return False, (
+        "iTerm2's browser panes are off. Settings > Advanced > search "
+        "'browserProfiles' > on, then restart iTerm2."
+    )
 
 
 def _write_iterm2_profile(url: str, name: str, path: pathlib.Path) -> tuple[bool, bool]:
@@ -156,7 +202,13 @@ def _write_iterm2_profile(url: str, name: str, path: pathlib.Path) -> tuple[bool
         if path.exists() and path.read_text("utf-8") == text:
             return True, False  # already correct — no write, and no wait needed
         _ITERM2_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        # Atomic, because iTerm2 watches this directory and CLOSES EVERY SESSION
+        # whose profile disappears. A plain write truncates first, and a reload that
+        # lands in that window sees a file with no profiles: observed live, with two
+        # open app panes vanishing mid-session. Rename is never partially visible.
+        staged = path.with_suffix(path.suffix + ".incoming")
+        staged.write_text(text, encoding="utf-8")
+        os.replace(staged, path)
         return True, True
     except OSError as exc:
         _warn(f"could not write the iTerm2 dynamic profile: {exc}")

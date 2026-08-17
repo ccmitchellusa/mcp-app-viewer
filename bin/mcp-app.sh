@@ -236,13 +236,21 @@ stop_server() {
 # than none, because you would be looking at the previous app believing it is
 # the current one.
 open_app() { # <file|-> [data-file]
-  local src="${1:--}" data="${2:-}" html
-  if [ "$src" = "-" ]; then html=$(cat); else html=$(cat "$src" 2>/dev/null); fi
-  if [ -z "${html//[[:space:]]/}" ]; then
+  local src="${1:--}" data="${2:-}" incoming="$LAST_HTML.incoming"
+  # Stream to a file rather than through a shell variable. An earlier version held
+  # the whole app in $html and tested it with ${html//[[:space:]]/} — that expansion
+  # is quadratic in bash, and on a 120KB MCP App it never finished under bash 3.2
+  # (macOS's /bin/bash) and still burned ~10s of CPU under 5.3. `grep` answers the
+  # same question in one pass regardless of shell version, so this needs no minimum.
+  if [ "$src" = "-" ]; then cat > "$incoming"; else cat "$src" > "$incoming" 2>/dev/null; fi
+  if ! grep -qa '[^[:space:]]' "$incoming" 2>/dev/null; then
+    # Staged, not written in place: a blank render must not destroy the captured
+    # app that `/mcp-app last` re-opens.
+    rm -f "$incoming"
     echo "no app HTML on input — nothing to render" >&2
     return 2
   fi
-  printf '%s' "$html" > "$LAST_HTML"
+  mv -f "$incoming" "$LAST_HTML"
 
   # The payload the app will receive. Cleared when this render has none: carrying
   # the PREVIOUS app's data forward would draw a confident, wrong picture — the
@@ -369,7 +377,7 @@ open_app() { # <file|-> [data-file]
         echo "displayed on: (no confirmation yet — see '/mcp-app log')"
       fi
     fi
-    log "opened app ($(printf '%s' "$html" | wc -c | tr -d ' ') bytes)"
+    log "opened app ($(wc -c < "$LAST_HTML" | tr -d ' ') bytes)"
     # OUTSIDE the confirmation branch, deliberately. It used to be inside, which
     # a stale match hid: on a cold log there is nothing to match, the wait times
     # out, and the browser that was the whole point of this target never launched.
