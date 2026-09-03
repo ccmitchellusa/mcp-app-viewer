@@ -321,7 +321,7 @@ def _open_iterm2(url: str, position: str = "right", pane_profile: str | None = N
 # exactly what we need — ``applicationName``, ``urlProtocol``, ``dataFolderName`` —
 # and it is authoritative for that build. Resolve the CLI to its app bundle, read
 # the file, done. A fork nobody has heard of works without a code change.
-_EDITOR_CLI_CANDIDATES = ("code", "codium", "cursor", "windsurf", "bob", "code-insiders")
+_EDITOR_CLI_CANDIDATES = ("code", "codium", "cursor", "windsurf", "bobide", "bob", "code-insiders")
 
 _VSCODE_DEFAULTS = {
     "cli": "code",
@@ -336,7 +336,12 @@ _EDITOR_HINT_PATTERNS = (
     ("windsurf", "windsurf"),
     ("vscodium", "codium"),
     ("codium", "codium"),
-    ("bob ide", "bob"),
+    # IBM Bob IDE: the shipping build's process ancestry reads "IBM Bob" and its
+    # CLI is `bobide` (NOT `bob`, which is the Bob *shell agent* on PATH). Match
+    # the app name and CLI explicitly, and never map to `bob`.
+    ("ibm bob", "bobide"),
+    ("bobide", "bobide"),
+    ("bob ide", "bobide"),
     ("visual studio code", "code"),
     ("vscode", "code"),
     ("code helper", "code"),
