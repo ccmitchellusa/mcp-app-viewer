@@ -1,0 +1,5 @@
+CONTRACT.md
+.vscodeignore
+*.vsix
+*.tgz
+node_modules/**
