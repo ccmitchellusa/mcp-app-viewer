@@ -109,6 +109,7 @@ _HOST_SHELL = """<!doctype html>
   var VERSION = "__VERSION__";       // this render; changes when new HTML is staged
   var THEME_SETTING = "__THEME__";   // auto | light | dark
   var DATA = __DATA__;               // the tool's structuredContent, or null
+  var MCP_ENDPOINT = "__MCP_ENDPOINT__"; // local /mcp-tool-call when proxy is active, else ""
 
   // What a host SENDS an app. The app consumes these as --color-*; its own
   // light-dark() fallbacks only apply when a host declares nothing.
@@ -203,9 +204,31 @@ _HOST_SHELL = """<!doctype html>
     }
 
     if (m.method === 'tools/call') {
-      // Recorded, then REFUSED — and the refusal is the honest answer. Executing a
-      // tool means talking to the MCP server, which this viewer does not do. A
-      // fabricated success would hand the app invented data.
+      // When MCP_ENDPOINT is configured, proxy tool calls to the real MCP server
+      // so interactive apps (KG viewer buttons, etc.) actually work.
+      if (typeof MCP_ENDPOINT === 'string' && MCP_ENDPOINT) {
+        var callId = m.id;
+        fetch('/mcp-tool-call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: m.params && m.params.name, arguments: m.params && m.params.arguments })
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (result) {
+            if (!('id' in m)) return;
+            if (result && result.error) {
+              post({ jsonrpc: '2.0', id: callId, error: result.error });
+            } else {
+              post({ jsonrpc: '2.0', id: callId, result: result });
+            }
+          })
+          .catch(function (err) {
+            if (!('id' in m)) return;
+            post({ jsonrpc: '2.0', id: callId, error: { code: -32603, message: String(err) } });
+          });
+        return;
+      }
+      // No MCP endpoint configured: record and refuse.
       record(m).then(function (ok) {
         if (!('id' in m)) return;
         post({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message:
@@ -263,7 +286,7 @@ _HOST_SHELL = """<!doctype html>
 """
 
 
-def _render_shell(theme: str, data_file: str | None, version: str) -> str:
+def _render_shell(theme: str, data_file: str | None, version: str, mcp_endpoint: str = "") -> str:
     """The host shell with its theme and payload baked in.
 
     Bad JSON degrades to "no data" — the app shows its empty state, which is honest —
@@ -288,15 +311,46 @@ def _render_shell(theme: str, data_file: str | None, version: str) -> str:
                 data_json = raw.replace("</", "<\\/")
     return (_HOST_SHELL.replace("__THEME__", theme)
             .replace("__DATA__", data_json)
-            .replace("__VERSION__", version))
+            .replace("__VERSION__", version)
+            .replace("__MCP_ENDPOINT__", mcp_endpoint or ""))
 
 
 _EVENTS_LOCK = threading.Lock()
 _MAX_EVENT_BYTES = 256 * 1024
 
 
+def _asset_base_url(base_url: str, html: str) -> str:
+    """Compute the correct asset base URL for a proxied MCP App.
+
+    An MCP App's HTML may live at a subdirectory of the MCP server root
+    (e.g. /mcp/widgets/kg-viewer/) while ``base_url`` only points at the
+    server root (e.g. https://host/mcp).  Relative asset imports in the HTML
+    then need to be proxied to the subdirectory, not the root.
+
+    The app advertises its own location via::
+
+        <meta name="mcp-app-resource" content="ui://<server>/<widget>">
+
+    This function converts that URI to the correct proxy base:
+        ui://ibmcloud/kg-viewer  +  https://host/mcp
+        =>  https://host/mcp/widgets/kg-viewer
+    """
+    import re as _re
+    m = _re.search(r'<meta\s[^>]*name="mcp-app-resource"\s[^>]*content="ui://[^/]*/([^"]+)"',
+                   html, _re.IGNORECASE)
+    if not m:
+        # Also try content before name ordering
+        m = _re.search(r'<meta\s[^>]*content="ui://[^/]*/([^"]+)"[^>]*name="mcp-app-resource"',
+                       html, _re.IGNORECASE)
+    if m:
+        widget = m.group(1).strip("/")
+        return base_url.rstrip("/") + "/widgets/" + widget
+    return base_url
+
+
 def _make_handler(root: Path, base_url: str | None, events_file: Path | None,
-                  version: str, heartbeat: Path | None, event_label: str | None):
+                  version: str, heartbeat: Path | None, event_label: str | None,
+                  proxy_headers: dict | None = None):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(root), **kw)
@@ -313,18 +367,22 @@ def _make_handler(root: Path, base_url: str | None, events_file: Path | None,
             path = self.translate_path(self.path)
             if Path(path).exists() or not base_url:
                 return super().send_head()
+            # The iframe lives at /app/content.html so its relative imports resolve
+            # to /app/<asset>. If that file isn't found at stage/app/<asset>, check
+            # whether it exists at stage/<asset> (copied there by --assets-dir).
+            # If so, rewrite self.path so SimpleHTTPRequestHandler finds it.
+            if self.path.startswith("/app/") and not Path(path).exists():
+                alt_path = self.translate_path("/" + self.path[len("/app/"):])
+                if Path(alt_path).exists():
+                    self.path = "/" + self.path[len("/app/"):]
+                    return super().send_head()
             return self._proxy()
 
         def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's naming
-            """Record something the app did, so the agent can read it later.
-
-            The other half of the conversation. An MCP App is not a picture: the
-            spec gives it `ui/update-model-context`, `tools/call` and `ui/message`
-            to push back to its host. In a real client the host acts on those. This
-            viewer is not connected to the MCP server, so it does the one honest
-            thing it can — writes them down, durably, outside the temp staging dir
-            that dies with the process.
-            """
+            """Handle app event recording and MCP tool-call proxying."""
+            if self.path == "/mcp-tool-call":
+                self._mcp_tool_call()
+                return
             if self.path != "/app-event":
                 self.send_error(404, "no such endpoint")
                 return
@@ -364,6 +422,100 @@ def _make_handler(root: Path, base_url: str | None, events_file: Path | None,
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _mcp_tool_call(self):
+            """Proxy a tools/call from the app iframe to the upstream MCP server.
+
+            The shell JS posts {name, arguments} here; we wrap it in a
+            Streamable-HTTP MCP request (initialize + tools/call), forward the
+            Bearer + Cookie auth headers, and return the tool result JSON.
+            """
+            if not base_url or not (proxy_headers or {}).get("Authorization"):
+                self.send_error(503, "no MCP endpoint or auth configured")
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except Exception as exc:
+                self.send_error(400, f"bad request: {exc}")
+                return
+
+            tool_name = payload.get("name", "")
+            tool_args = payload.get("arguments") or {}
+
+            # Derive the MCP endpoint: strip any trailing path beyond /mcp
+            from urllib.parse import urlparse as _up
+            _parsed = _up(base_url)
+            # base_url is e.g. https://host/mcp  — use it directly as the MCP endpoint
+            mcp_url = base_url.rstrip("/")
+
+            req_headers = dict(proxy_headers or {})
+            req_headers["Content-Type"] = "application/json"
+            req_headers["Accept"] = "application/json, text/event-stream"
+
+            # Streamable HTTP: single POST with initialize
+            init_body = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05",
+                           "capabilities": {},
+                           "clientInfo": {"name": "mcp-app-viewer", "version": "1"}}
+            }).encode("utf-8")
+            req_headers["Content-Length"] = str(len(init_body))
+
+            result_body: bytes = b""
+            try:
+                import urllib.request as _ur
+                import urllib.error as _ue
+
+                # Initialize to get a session ID
+                init_req = _ur.Request(mcp_url, data=init_body, headers=req_headers, method="POST")
+                session_id = None
+                with _ur.urlopen(init_req, timeout=15) as resp:
+                    session_id = resp.headers.get("Mcp-Session-Id")
+
+                # Now call the tool
+                call_payload = json.dumps({
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": tool_args}
+                }).encode("utf-8")
+                call_headers = dict(req_headers)
+                call_headers["Content-Length"] = str(len(call_payload))
+                if session_id:
+                    call_headers["Mcp-Session-Id"] = session_id
+
+                call_req = _ur.Request(mcp_url, data=call_payload, headers=call_headers, method="POST")
+                with _ur.urlopen(call_req, timeout=60) as resp:
+                    raw = resp.read(32 * 1024 * 1024)
+                    # Streamable HTTP may return SSE; extract last data: line
+                    text = raw.decode("utf-8", errors="replace")
+                    if text.startswith("data:"):
+                        lines = [l[5:].strip() for l in text.splitlines() if l.startswith("data:")]
+                        last_data = lines[-1] if lines else "{}"
+                    else:
+                        last_data = text
+                    parsed = json.loads(last_data)
+                    # Extract result from JSON-RPC envelope
+                    if "result" in parsed:
+                        result_body = json.dumps(parsed["result"]).encode("utf-8")
+                    elif "error" in parsed:
+                        result_body = json.dumps({"error": parsed["error"]}).encode("utf-8")
+                    else:
+                        result_body = json.dumps(parsed).encode("utf-8")
+
+            except Exception as exc:
+                err = json.dumps({"error": {"code": -32603, "message": str(exc)}}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err)))
+                self.end_headers()
+                self.wfile.write(err)
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(result_body)))
+            self.end_headers()
+            self.wfile.write(result_body)
 
         def _version(self):
             """The token the open pane compares against, and its liveness ping.
@@ -407,9 +559,25 @@ def _make_handler(root: Path, base_url: str | None, events_file: Path | None,
             reported as a real status code — never a silent empty 200, which would
             render as a broken component with no explanation.
             """
-            target = base_url.rstrip("/") + "/" + self.path.lstrip("/")
+            # Avoid double-prefixing: if the base URL's path tail already
+            # appears at the start of self.path, strip it once so we don't
+            # produce e.g. https://host/mcp/mcp/widgets/kg-viewer/.
+            from urllib.parse import urlparse as _urlparse
+            _base_path = _urlparse(base_url).path.rstrip("/")
+            _req_path = "/" + self.path.lstrip("/")
+            if _base_path and _req_path.startswith(_base_path + "/"):
+                _req_path = _req_path[len(_base_path):]
+            # The app HTML lives at /app/content.html (inside the host shell's
+            # iframe), so relative asset requests from it resolve to /app/<asset>.
+            # But the origin serves those assets at the base URL root, not under
+            # /app/. Strip the leading /app/ prefix so the proxy fetches the right
+            # path instead of 404ing on e.g. /mcp/app/activity-pane.js.
+            if _req_path.startswith("/app/"):
+                _req_path = _req_path[len("/app"):]
+            target = base_url.rstrip("/") + _req_path
             try:
-                with urllib.request.urlopen(target, timeout=20) as resp:
+                req = urllib.request.Request(target, headers=proxy_headers or {})
+                with urllib.request.urlopen(req, timeout=20) as resp:
                     body = resp.read(_MAX_PROXY_BYTES)
                     ctype = resp.headers.get("Content-Type", "application/octet-stream")
             except urllib.error.HTTPError as exc:
@@ -515,8 +683,68 @@ def main(argv: list[str] | None = None) -> int:
             "app renders its empty state, because no host ever sent it data."
         ),
     )
+    ap.add_argument(
+        "--proxy-header",
+        metavar="NAME:VALUE",
+        action="append",
+        default=[],
+        help=(
+            "extra request header forwarded on every proxied fetch (repeatable). "
+            "Example: --proxy-header 'Authorization: Bearer <token>'. "
+            "When --base-url is set and no --proxy-header is given the server also "
+            "tries ~/.bob/settings/mcp.json (mcpServers.ibmcloud.headers) as a "
+            "fallback so the IBM Cloud KG viewer works without manual flag threading."
+        ),
+    )
+    ap.add_argument(
+        "--proxy-cookie",
+        metavar="NAME=VALUE",
+        action="append",
+        default=[],
+        help=(
+            "session cookie forwarded on every proxied fetch (repeatable). "
+            "Example: --proxy-cookie 'session=abc123'. "
+            "When --base-url is set and no --proxy-cookie is given the server also "
+            "tries ~/.config/mcp-app-viewer/state (proxy_cookie key) as a fallback."
+        ),
+    )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
+
+    # Build proxy_headers from --proxy-header flags, then fall back to mcp.json.
+    proxy_headers: dict[str, str] = {}
+    for raw in args.proxy_header:
+        if ":" in raw:
+            k, _, v = raw.partition(":")
+            proxy_headers[k.strip()] = v.strip()
+    if not proxy_headers and args.base_url:
+        try:
+            import json as _json
+            _cfg = Path.home() / ".bob" / "settings" / "mcp.json"
+            _data = _json.loads(_cfg.read_text("utf-8"))
+            for _srv in _data.get("mcpServers", {}).values():
+                _u = (_srv.get("url") or "").rstrip("/")
+                _b = args.base_url.rstrip("/")
+                if _u and _b.startswith(_u.rsplit("/mcp", 1)[0]):
+                    proxy_headers.update(_srv.get("headers", {}))
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Build proxy_cookies from --proxy-cookie flags, then fall back to state file.
+    proxy_cookies: list[str] = list(args.proxy_cookie)
+    if not proxy_cookies and args.base_url:
+        try:
+            _state = Path.home() / ".config" / "mcp-app-viewer" / "state"
+            for line in _state.read_text("utf-8").splitlines():
+                if line.startswith("proxy_cookie="):
+                    proxy_cookies.append(line[len("proxy_cookie="):])
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    # Merge all cookie fragments into a single Cookie header value.
+    if proxy_cookies:
+        proxy_headers["Cookie"] = "; ".join(proxy_cookies)
 
     html = sys.stdin.read() if args.html_file == "-" else Path(args.html_file).read_text("utf-8")
     if not html.strip():
@@ -537,15 +765,29 @@ def main(argv: list[str] | None = None) -> int:
     # open pane compares against.
     version = str(time.time_ns())
     (stage / "app" / "index.html").write_text(
-        _render_shell(args.theme, args.data_file, version), encoding="utf-8"
+        _render_shell(args.theme, args.data_file, version,
+                      mcp_endpoint="/mcp-tool-call" if (args.base_url and proxy_headers.get("Authorization")) else ""),
+        encoding="utf-8"
     )
+
+    # Resolve the correct asset base URL from the app HTML's mcp-app-resource
+    # meta tag so that relative asset imports proxy to the right subdirectory.
+    asset_base_url = _asset_base_url(args.base_url, html) if args.base_url else None
 
     url = f"http://127.0.0.1:{args.port}/app/index.html"
     print(f"mcp-app-viewer: serving {url}")
     if args.data_file:
         print("mcp-app-viewer: delivering tool result to the app")
     if args.base_url:
-        print(f"mcp-app-viewer: proxying missing assets -> {args.base_url}")
+        effective = asset_base_url or args.base_url
+        print(f"mcp-app-viewer: proxying missing assets -> {effective}")
+        if effective != args.base_url:
+            print(f"mcp-app-viewer: asset subpath resolved from mcp-app-resource meta tag")
+        if proxy_headers:
+            injected = ", ".join(k for k in proxy_headers)
+            print(f"mcp-app-viewer: forwarding proxy headers: {injected}")
+        if proxy_cookies:
+            print(f"mcp-app-viewer: forwarding session cookie ({len(proxy_cookies)} fragment(s))")
     print("mcp-app-viewer: Ctrl-C to stop")
 
     events_file = Path(args.events_file) if args.events_file else None
@@ -559,8 +801,8 @@ def main(argv: list[str] | None = None) -> int:
 
     server = ThreadingHTTPServer(
         ("127.0.0.1", args.port),
-        _make_handler(stage, args.base_url, events_file, version, heartbeat,
-                      args.event_label),
+        _make_handler(stage, asset_base_url, events_file, version, heartbeat,
+                      args.event_label, proxy_headers or None),
     )
     if not args.no_open:
         threading.Timer(

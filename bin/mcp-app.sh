@@ -503,6 +503,42 @@ PYEOF
       _set base "$1"; echo "asset proxy origin: $1"
     fi
     ;;
+  session)
+    # Exchange an IBM Cloud IAM one-time passcode for a web session cookie.
+    # Usage: mcp-app.sh session <passcode>
+    # The session cookie is saved to state and forwarded by mcp_app_server.py
+    # on every proxied request to widget routes that require cookie auth.
+    shift
+    _passcode="${1:-}"
+    if [ -z "$_passcode" ]; then
+      echo "usage: mcp-app.sh session <one-time-passcode>"
+      echo "  get a passcode at: https://iam.cloud.ibm.com/identity/passcode"
+      exit 1
+    fi
+    _base=$(_get base "$MCP_APP_BASE_URL")
+    if [ -z "$_base" ]; then
+      echo "no proxy base URL set — run 'mcp-app.sh base <url>' first"
+      exit 1
+    fi
+    _origin="${_base%/mcp*}"
+    _resp=$(curl -sS -X POST \
+      -H "Content-Type: application/json" \
+      -H "Accept: application/json" \
+      -c /dev/null -D - \
+      -d "{\"passcode\": \"$_passcode\", \"next\": \"/mcp/widgets/kg-viewer/\"}" \
+      "${_origin}/auth/passcode" 2>/dev/null)
+    _cookie=$(echo "$_resp" | grep -i '^set-cookie:' | head -1 | sed 's/^[Ss]et-[Cc]ookie: *//' | cut -d';' -f1 | tr -d '\r')
+    _status=$(echo "$_resp" | python3 -c "import sys,json; b=''.join(l for l in sys.stdin if not l.startswith(('HTTP','content','date','server','strict','set-','location'))); d=json.loads(b.strip() or '{}'); print(d.get('ok',''))" 2>/dev/null)
+    if [ -n "$_cookie" ] && [ "$_status" = "True" ]; then
+      _set proxy_cookie "$_cookie"
+      echo "session established: $_cookie"
+      echo "restart the viewer ('mcp-app.sh last') to pick up the new session"
+    else
+      _body=$(echo "$_resp" | tail -1)
+      echo "session exchange failed: $_body"
+      exit 1
+    fi
+    ;;
   target)
     shift
     case "${1:-}" in
@@ -627,6 +663,7 @@ PYEOF
     echo "  target    : $(_get target "$MCP_APP_TARGET")"
     echo "  position  : $(_get position "$MCP_APP_POSITION")"
     echo "  asset base: $(_get base "${MCP_APP_BASE_URL:-}")"
+    echo "  session   : $(_get proxy_cookie "" | cut -c1-40 | sed 's/.*/& …/' || echo "none (widget routes need mcp-app.sh session <otc>)")"
     echo "  asset dir : $(_get assets "${MCP_APP_ASSETS:-}")"
     echo "  term brwsr: $(_get browser "auto")"
     echo "  theme     : $(_get theme "auto")"

@@ -148,6 +148,15 @@ if [ -z "$resource_uri" ] && [ "$server" = "diagrammatic" ]; then
     mcp__diagrammatic__view_theme_preview:*) resource_uri="ui://diagrammatic/theme-preview" ;;
   esac
 fi
+if [ -z "$resource_uri" ] && [ "$server" = "ibmcloud" ]; then
+  case "$tool_name" in
+    mcp__ibmcloud__ibmcloud_browse_resource) resource_uri="ui://ibmcloud/resource-views" ;;
+    mcp__ibmcloud__ibmcloud_kg_visualize)    resource_uri="ui://ibmcloud/kg-viewer" ;;
+    mcp__ibmcloud__ibmcloud_search_resources_ui) resource_uri="ui://ibmcloud/search" ;;
+    mcp__ibmcloud__ibmcloud_support_browse)  resource_uri="ui://ibmcloud/support" ;;
+    mcp__ibmcloud__ibmcloud_usage_browse)    resource_uri="ui://ibmcloud/usage" ;;
+  esac
+fi
 if [ -n "$resource_uri" ] && [ -s "$APPS_DIR/${server_key}__$(cache_name "$resource_uri").html" ]; then
   cached="$APPS_DIR/${server_key}__$(cache_name "$resource_uri").html"
 else
